@@ -333,6 +333,9 @@ ollaya does.
 | model | accuracy | choice | score | noul | KL | Brier | ECE | noul true (gold 50.8%) |
 |---|---|---|---|---|---|---|---|---|
 | encoder `typed-decisions` (trained on this train split) | **0.766** | 0.733 | 0.723 | 0.857 | **0.117** | **0.061** | 0.213 | 51.5% |
+| thinker Winnow-E4B Q8, `winnow` prompt, `gemma4`, T 1.2574 (the author's) | **0.724** | 0.697 | 0.686 | 0.802 | 0.294 | 0.132 | **0.025** | 60.7% |
+| thinker JevK5 v0.3 4B Q8, `jevk5` prompt, T 1.22 (the author's) | 0.626 | 0.567 | 0.578 | 0.750 | 0.406 | 0.198 | 0.096 | 58.2% |
+| thinker Qwen3.5-4B Q8, lev prompt, Jev mode, fitted T (5.07 / 3.82 / 2.88) | 0.588 | 0.560 | 0.526 | 0.698 | 0.287 | 0.152 | 0.058 | 52.7% |
 | thinker Qwen3.5-4B Q8, lev prompt, Jev mode, T 1 | 0.588 | 0.560 | 0.526 | 0.698 | 1.045 | 0.322 | 0.232 | 52.7% |
 | encoder `english` | 0.362 | 0.288 | 0.323 | 0.487 | 0.569 | 0.316 | **0.175** | 67.8% |
 | encoder `multilingual` | 0.352 | 0.295 | 0.286 | 0.497 | 1.089 | 0.463 | 0.314 | 77.2% |
@@ -342,17 +345,27 @@ The encoders reproduce ollaya's numbers: 0.766 for `typed-decisions` and
 teacher's own self-agreement, so it has learned the teacher's quirks
 along with the task.
 
-Qwen3.5-4B, the escalation model, sits between the two encoder groups.
-That is in line with ollaya's generic `llm-logits` reads of 4B instruct
-models (Qwen3-4B 0.559). Its KL of 1.045 shows it puts nearly all its
-probability on one answer, which is what `lev.calibrate` now refits for
-thinkers too. The two general encoders answer yes to 68–77% of the noul
-questions against a gold 51%. The thinker has no such lean.
+The two prompts ported from ollaya's reference code reproduce its
+numbers on the fine-tunes they belong to. JevK5 scores 0.626 (ollaya
+0.625, ECE 0.093). Winnow-E4B scores 0.724 (ollaya 0.722, ECE 0.022).
+Winnow-E4B, a Gemma 4 E4B fine-tune, is the best general model here,
+within 0.014 of Jev, and it is also the best calibrated.
+
+Qwen3.5-4B, the escalation model, is well behind on this set. That is in
+line with ollaya's generic `llm-logits` reads of 4B instruct models
+(Qwen3-4B 0.559). At T 1 it puts nearly all its probability on one
+answer (KL 1.045, ECE 0.232). Temperatures fitted by `jolt -M:calibrate
+--model qwen3.5-4b` take ECE to 0.058 and KL to 0.287 without moving an
+answer. The fit used 200 of the train split's cases, fitted per type,
+with the other 200 held out: ECE went 0.363 → 0.129 for choice, 0.157 →
+0.055 for noul and 0.238 → 0.076 for score.
+
+The two general encoders answer yes to 68–77% of the noul questions,
+against a gold 51%. The two fine-tuned thinkers lean the same way less
+(58–61%), and Qwen3.5-4B does not.
 
 Not recorded: latency. The GPU was shared with another session's bench
-during these runs. Pending: Qwen3.5-4B with temperatures fitted on the
-train split, and the `jevk5` and `winnow` prompts on their fine-tunes
-(JevK5 v0.3, Winnow-E4B), which ollaya puts at 0.625 and 0.722.
+during these runs.
 
 ## Measuring a change: `bench/paired.clj`
 
