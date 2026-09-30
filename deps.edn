@@ -187,4 +187,5 @@
            :run {:main-opts ["-m" "lev.run"]}
            :prepare {:main-opts ["-m" "lev.prepare"]}
            :serve {:main-opts ["-m" "lev.server"]}
+           :mcp {:main-opts ["-m" "lev.server" "--mcp"]}
            :calibrate {:main-opts ["-m" "lev.calibrate"]}}}

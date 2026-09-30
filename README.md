@@ -245,6 +245,20 @@ takes the 20-way choice bucket's ECE from 0.57 to 0.10 and the 6-way from
 in-distribution trio the encoder's ECE drops from 0.16 to 0.11. Full
 numbers are in `bench/README.md`.
 
+A case can also carry `"targets": {"q": [p, ...]}`, a gold distribution
+in answer order (a noul's is `[false, true]`). The fit then minimises the
+cross-entropy against it instead of the label's NLL.
+`bench/typed_decisions_data.py` writes the typed-decisions train split
+this way, as `bench/data/typed-decisions-calib.jsonl`.
+
+A thinker is refit the same way, with `--model qwen3.5-4b`. Its raw
+option scores are much more overconfident than an encoder's. ollaya
+measured ECE around 0.4 at T=1 for 4B instruct models on typed-decisions,
+and 0.08 after fitting one temperature per type. The file goes under the
+thinker's name in `:calibration`, or inline as the thinker's
+`:calibration`, which can be one temperature, three (choice, score,
+noul), a calibration map or its file's path.
+
 ### Thinkers
 
 ```clojure
@@ -257,13 +271,41 @@ numbers are in `bench/README.md`.
                         :jev true               ; thinking off: every question in one pass (Jev mode, below)
                         :split-boundary true    ; Jev mode: option ids start their own token (75% vs 68% on authored144)
                         :thinks true            ; false: no thinking mode (no <think> tags; thinking stays off)
-                        :prompt "lev"           ; or "semif": SemIf's JSON payload with lettered options
+                        :prompt "lev"           ; or "semif", "jevk5", "winnow" (below)
+                        :template "chatml"      ; the chat format: chatml (Qwen, MiniCPM) or gemma4 (Gemma 4, Winnow)
+                        :calibration 1.0        ; temperature(s) over the option scores (Calibration)
                         :layout "question"}}    ; or "catalog": questions before the state (fast batches, much less accurate)
  :max-thinkers 1}                                ; resident at once (each is GBs)
 ```
 
 The `minicpm5` entry spells out the defaults from `lev.think/defaults`,
 so `{:model path}` alone is a complete entry.
+
+`:prompt` picks how a question is put to the model. `lev` is the state,
+the question, and the options by id, with `ANSWER: <id>` scored.
+`semif` is SemIf's JSON payload with lettered options. The other two are
+the prompts of models fine-tuned on them, and they read the letter's next
+token only:
+
+- `jevk5` is
+  [alibiserikbay/JevK5](https://huggingface.co/alibiserikbay/JevK5-GGUF)'s
+  prompt (a Qwen3.5-4B fine-tune): SemIf's payload with the state as JSON
+  and `id: description` options, at most 16. The author's temperature is
+  1.22.
+- `winnow` is [EldanRing/Winnow-E4B](https://huggingface.co/EldanRing/Winnow-E4B)'s
+  prompt (a Gemma 4 fine-tune): compact JSON with `<` escaped, lettered
+  options, `Answer:\n`. It needs `:template "gemma4"`, and `:thinks false`
+  for E4B, whose template has no empty-thought marker. The author's
+  fitted temperature is 1.2574.
+
+```clojure
+{:thinkers {"jevk5" {:model "/Users/me/models/jevk5-4b-v0.3-Q8_0.gguf" :prompt "jevk5" :thinking false :calibration 1.22}
+            "winnow-e4b" {:model "/Users/me/models/Winnow-E4B-Q8_0.gguf" :prompt "winnow" :template "gemma4"
+                          :thinks false :n-ctx 8192 :n-seq-max 8 :calibration 1.2574}}}
+```
+
+Neither has been measured on lev's benches yet. ollaya reports 0.625
+(JevK5) and 0.722 (Winnow-E4B) on typed-decisions.
 
 Each entry defines a model name a request can ask for. `--thinker PATH`
 or `LEV_THINKER` adds one named `thinker`. Thinkers are loaded on first
@@ -300,8 +342,10 @@ keep `:n-seq-max` low for them.
 
 Text from the caller (the state, instructions and option descriptions)
 is escaped before it reaches either path: a control token's text such as
-`<|im_end|>` gets a zero-width space, so a state can't close its turn and
-write the next one (`lev.llm/escape`).
+`<|im_end|>` (or Gemma's `<turn|>`) gets a zero-width space, so a state
+can't close its turn and write the next one (`lev.llm/escape`). An empty
+state goes the per-question path, since the engine's contexts can't be
+empty.
 
 ## Context: what the model sees
 
@@ -683,7 +727,27 @@ libssl and libcrypto for the adapter.
 ```
 ./lev-server --data data --workflows workflows --port 8080 --api-key s3cret
 ./lev-server --self-test --data data --golden golden
+./lev-server --mcp --data data          # MCP on stdio instead of HTTP (below)
 ```
+
+### As MCP tools
+
+`./lev-server --mcp`, or `jolt -M:mcp`, serves the same models and
+workflows to an agent over the Model Context Protocol, on stdio. It takes
+every flag and `config.edn` setting the HTTP server does:
+
+```
+claude mcp add lev -- /path/to/lev-server --mcp --data /path/to/data
+```
+
+The tools are `decide`, `run_workflow`, `list_models` and
+`list_workflows`. `decide` answers exactly what `POST /v1/systemone`
+answers, because it calls the same handler in process, and a bad request
+comes back as a tool error carrying the 422's body. The resources
+`lev://models`, `lev://workflows` and `lev://workflows/<name>` show what is
+configured and each workflow's questions. `skills/lev-decisions/SKILL.md`
+is an agent skill for it: when a typed decision beats reasoning in text,
+how to write the questions, and when to act on an answer or escalate it.
 
 Tagged releases, the `v*` tags, carry this binary prebuilt for macOS
 arm64, with `golden/` and `workflows/` alongside, built and self-tested

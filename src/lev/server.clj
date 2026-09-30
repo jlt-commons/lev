@@ -73,6 +73,7 @@
             [lev.config :as cfg]
             [lev.json :as json]
             [lev.llm]
+            [lev.mcp :as mcp]
             [lev.patterns :as pat]
             [lev.router :as router]
             [lev.sequence :as seq]
@@ -605,7 +606,9 @@
    DIR is the data root jolt prepare writes: DIR/ (english),
    DIR/multilingual, DIR/typed-decisions; the default checkpoint is loaded
    at startup, the others and the thinkers on first use.
-   --self-test [--golden DIR]: load, verify against golden/, exit 0 or 1."
+   --self-test [--golden DIR]: load, verify against golden/, exit 0 or 1.
+   --mcp: serve the same models as MCP tools on stdin/stdout (lev.mcp)
+   instead of HTTP."
   [& args]
   (let [opts (cfg/parse-args args)
         ctx (cfg/context opts)
@@ -649,11 +652,21 @@
                                    (str " (trained " (:trained-max-len agent) ")") "")
                                  (:head-max-len (:cfg agent)))))))
             (log "default model" (:default rt) "is not available; the others are served"))]
-    (if (get opts "--self-test")
+    (cond
+      (get opts "--self-test")
       (let [results (self-test rt (arg "--golden" "LEV_GOLDEN" :golden "golden"))]
         (doseq [[name ok? detail] results]
           (println (if ok? "ok  " "FAIL") name (or detail "")))
         (System/exit (if (every? second results) 0 1)))
+
+      ;; the same models and workflows as MCP tools over stdio (lev.mcp);
+      ;; everything but the protocol goes to stderr
+      (get opts "--mcp")
+      (let [workflows (wf/load-workflows (cfg/workflow-dirs ctx))]
+        (log "serving MCP on stdio; workflows:" (if (seq workflows) (str/join ", " (sort (keys workflows))) "none"))
+        (mcp/serve (handler rt {:workflows workflows}) {:workflows workflows}))
+
+      :else
       (let [workflows (wf/load-workflows (cfg/workflow-dirs ctx))
             port (Long/parseLong (str (arg "--port" "PORT" :port "8080")))
             host (arg "--host" "LEV_HOST" :host "127.0.0.1")
