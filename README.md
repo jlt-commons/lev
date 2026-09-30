@@ -304,8 +304,10 @@ token only:
                           :thinks false :n-ctx 8192 :n-seq-max 8 :calibration 1.2574}}}
 ```
 
-Neither has been measured on lev's benches yet. ollaya reports 0.625
-(JevK5) and 0.722 (Winnow-E4B) on typed-decisions.
+On typed-decisions (`bench/README.md`), Winnow-E4B scores 0.724 at ECE
+0.025, the best general model measured there, and JevK5 scores 0.626.
+Both match ollaya's numbers. Qwen3.5-4B scores 0.588 with its
+temperatures fitted. authored144 has not been run on either.
 
 Each entry defines a model name a request can ask for. `--thinker PATH`
 or `LEV_THINKER` adds one named `thinker`. Thinkers are loaded on first
