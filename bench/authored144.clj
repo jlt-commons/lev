@@ -14,7 +14,8 @@
   (`thinker`), with --thinking overriding its default. Prints per-family
   accuracy, balanced accuracy and ms per case; --out writes one line per
   case with the prediction and the probabilities."
-  (:require [clojure.string :as str]
+  (:require [clojure.edn]
+            [clojure.string :as str]
             [lev.agent :as ag]
             [lev.config :as cfg]
             [lev.json :as json]
@@ -98,6 +99,10 @@
                                 :checkpoints (into {} (map (fn [n] [n (cfg/limits ctx n)])) router/names)
                                 :calibrations (cfg/calibrations ctx)})
         agent (router/load-model rt model)
+        ;; --calibration covers every encoder through the router; a thinker's here
+        agent (if-let [path (and (router/thinker? rt model) (get opts "--calibration"))]
+                (ag/with-calibration agent (clojure.edn/read-string (slurp path)))
+                agent)
         run-opts (cond-> {}
                    (contains? opts "--thinking") (assoc :thinking (= "true" (get opts "--thinking")))
                    (true? (get opts "--debias")) (assoc :debias true))

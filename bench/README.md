@@ -318,6 +318,42 @@ measured.
 Not ported from SemIf: its per-workload temperature scaling. `lev.calibrate`
 refits the encoders only. At ECE 0.034 Qwen3.5-4B needs it least.
 
+## typed-decisions (2026-09-29)
+
+`bench/typed_decisions.clj` on the test split of
+[LocalLLaMA/typed-decisions](https://huggingface.co/datasets/LocalLLaMA/typed-decisions):
+400 JSON states from four workflows, five questions each, 2,000 decisions.
+Build the data with `uv run --with pyarrow python bench/typed_decisions_data.py`.
+The gold is the mean of three teacher samples, so accuracy (argmax against
+the gold's label) measures agreement with the teacher. The teacher agrees
+with itself 0.735 of the time, and the prior scores 0.470. Jev scores 0.727
+on the dataset's card and 0.738 in Winnow's report. ECE uses 15 bins, as
+ollaya does.
+
+| model | accuracy | choice | score | noul | KL | Brier | ECE | noul true (gold 50.8%) |
+|---|---|---|---|---|---|---|---|---|
+| encoder `typed-decisions` (trained on this train split) | **0.766** | 0.733 | 0.723 | 0.857 | **0.117** | **0.061** | 0.213 | 51.5% |
+| thinker Qwen3.5-4B Q8, lev prompt, Jev mode, T 1 | 0.588 | 0.560 | 0.526 | 0.698 | 1.045 | 0.322 | 0.232 | 52.7% |
+| encoder `english` | 0.362 | 0.288 | 0.323 | 0.487 | 0.569 | 0.316 | **0.175** | 67.8% |
+| encoder `multilingual` | 0.352 | 0.295 | 0.286 | 0.497 | 1.089 | 0.463 | 0.314 | 77.2% |
+
+The encoders reproduce ollaya's numbers: 0.766 for `typed-decisions` and
+0.361 for `english` in Winnow's report. `typed-decisions` beats the
+teacher's own self-agreement, so it has learned the teacher's quirks
+along with the task.
+
+Qwen3.5-4B, the escalation model, sits between the two encoder groups.
+That is in line with ollaya's generic `llm-logits` reads of 4B instruct
+models (Qwen3-4B 0.559). Its KL of 1.045 shows it puts nearly all its
+probability on one answer, which is what `lev.calibrate` now refits for
+thinkers too. The two general encoders answer yes to 68–77% of the noul
+questions against a gold 51%. The thinker has no such lean.
+
+Not recorded: latency. The GPU was shared with another session's bench
+during these runs. Pending: Qwen3.5-4B with temperatures fitted on the
+train split, and the `jevk5` and `winnow` prompts on their fine-tunes
+(JevK5 v0.3, Winnow-E4B), which ollaya puts at 0.625 and 0.722.
+
 ## Measuring a change: `bench/paired.clj`
 
 A sequential before/after (two processes, one after the other) confounds

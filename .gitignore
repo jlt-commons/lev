@@ -26,3 +26,6 @@ lev-server
 .beads-credential-key
 bench/data/triad120.jsonl
 bench/data/calib.jsonl
+
+# typed-decisions, rebuilt by bench/typed_decisions_data.py
+bench/data/typed-decisions-*.jsonl
