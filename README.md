@@ -114,6 +114,11 @@ been measured, so configure it with `:thinking false`.
 (2.5B, Apache-2.0, `Q8_0` 2.7 GB) is the measured thinking model: 95%
 with a thought, in seconds, and 75% answering at once. For a model
 without a thinking mode, such as Qwen2.5-Instruct, set `:thinks false`.
+Where robustness matters more than speed, [EldanRing/Winnow-E4B](https://huggingface.co/EldanRing/Winnow-E4B)
+(`gguf/Winnow-E4B-Q8_0.gguf`, 8.0 GB) with the `winnow` prompt scores
+97.2% on authored144's rephrasings against Qwen3.5-4B's 79.6%, and 0.724
+on typed-decisions against 0.588. It gives up 2 points on authored144
+itself and is larger and slower (Thinkers, below).
 
 ```
 hf download bartowski/Qwen_Qwen3.5-4B-GGUF Qwen_Qwen3.5-4B-Q8_0.gguf --local-dir ~/models
