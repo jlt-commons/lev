@@ -254,3 +254,15 @@
     (let [r (router/make-router {:models {"english" tu/data-dir} :calibrations {"english" "target/nope.edn"}
                                  :loader router/load-prepared})]
       (is (thrown-with-msg? Exception #"nope.edn" (router/load-model r "english"))))))
+
+(deftest a-calibration-file-is-applied-when-a-thinker-loads
+  (clojure.java.io/make-parents "target/router-thinker-cal.edn")
+  (spit "target/router-thinker-cal.edn" (pr-str {:temperature [1.22 1.22 1.22]}))
+  (let [r (router/make-router {:thinkers {"jevk5" {:model "x.gguf" :temperature 0.0}}
+                               :calibrations {"JevK5" "target/router-thinker-cal.edn"}
+                               :loader (fake-loader (atom []))
+                               :thinker-loader (fn [name cfg] {:kind :thinker :name name :cfg cfg})})
+        t (router/load-model r "jevk5")]
+    (is (= [1.22 1.22 1.22] (get-in t [:cfg :calibration :temperature])) "named like the thinker, any case")
+    (is (= 0.0 (get-in t [:cfg :temperature])) "the sampling temperature is its own"))
+  (jolt.host/delete-tree! "target/router-thinker-cal.edn"))

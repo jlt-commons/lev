@@ -131,24 +131,27 @@
   [{:keys [models data max-loaded default auto-task-detection loader limits checkpoints calibrations
            thinkers max-thinkers thinker-loader]
     :or {max-loaded 1 default "english" auto-task-detection false max-thinkers 1}}]
-  {:models (into (default-models (or data "data"))
-                 (map (fn [[k v]] [(normalise-name k) v])) models)
-   :max-loaded (max 1 (long max-loaded))
-   ;; the default may be a thinker: resolved once the thinkers are known
-   :default (normalise-name {:thinkers (into {} (map (fn [[k v]] [(if (keyword? k) (name k) (str k)) v])) thinkers)} default)
-   :auto-task-detection (boolean auto-task-detection)
-   :limits (or limits {})
-   :checkpoints (into {} (map (fn [[k v]] [(normalise-name k) v])) checkpoints)
-   :calibrations (into {} (map (fn [[k v]] [(normalise-name k) v])) calibrations)
-   :loader (or loader load-prepared)
-   :thinkers (into {} (map (fn [[k v]] [(if (keyword? k) (name k) (str k)) v])) thinkers)
-   :max-thinkers (max 1 (long max-thinkers))
-   :thinker-loader (or thinker-loader (fn [name cfg] (think/thinker (assoc cfg :name name))))
-   :custom-thinker-loader (some? thinker-loader)
-   :agents (atom {})
-   :order (atom [])             ; least recently used first
-   :thinker-agents (atom {})
-   :thinker-order (atom [])})
+  (let [thinkers (into {} (map (fn [[k v]] [(if (keyword? k) (name k) (str k)) v])) thinkers)
+        named-thinkers {:thinkers thinkers}]
+    {:models (into (default-models (or data "data"))
+                   (map (fn [[k v]] [(normalise-name k) v])) models)
+     :max-loaded (max 1 (long max-loaded))
+     ;; the default may be a thinker: resolved once the thinkers are known
+     :default (normalise-name named-thinkers default)
+     :auto-task-detection (boolean auto-task-detection)
+     :limits (or limits {})
+     :checkpoints (into {} (map (fn [[k v]] [(normalise-name k) v])) checkpoints)
+     ;; an encoder's or a thinker's: a thinker's applies when it loads
+     :calibrations (into {} (map (fn [[k v]] [(normalise-name named-thinkers k) v])) calibrations)
+     :loader (or loader load-prepared)
+     :thinkers thinkers
+     :max-thinkers (max 1 (long max-thinkers))
+     :thinker-loader (or thinker-loader (fn [name cfg] (think/thinker (assoc cfg :name name))))
+     :custom-thinker-loader (some? thinker-loader)
+     :agents (atom {})
+     :order (atom [])             ; least recently used first
+     :thinker-agents (atom {})
+     :thinker-order (atom [])}))
 
 (defn limits-for
   "The configured sequence limits for one checkpoint: the router-wide ones
@@ -245,7 +248,13 @@
       (let [{:keys [thinker-agents thinker-order max-thinkers]} router]
         (if-let [agent (get @thinker-agents key)]
           (do (touch! thinker-order key) agent)
-          (let [agent ((:thinker-loader router) key (get (:thinkers router) key))]
+          (let [agent ((:thinker-loader router) key (get (:thinkers router) key))
+                agent (if-let [path (get (:calibrations router) key)]
+                        (do (when-not (.exists (clojure.java.io/file path))
+                              (throw (ex-info (str "calibration file " path " for " key " does not exist")
+                                              {:type :model-unavailable :model key :file path})))
+                            (ag/with-calibration agent (clojure.edn/read-string (slurp path))))
+                        agent)]
             (swap! thinker-agents assoc key agent)
             (touch! thinker-order key)
             (evict! thinker-agents thinker-order max-thinkers)

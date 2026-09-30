@@ -270,14 +270,27 @@
   ([agent states questions] (system-one-batch agent states questions nil))
   ([agent states questions opts] (system-one-batch* agent (vec states) questions opts)))
 
+(defn- calibration-path
+  "Where an agent keeps its temperatures: an encoder's are its
+  checkpoint config's; a thinker's sit under its config's :calibration,
+  since its :temperature is the sampling one."
+  [agent]
+  (if (= :thinker (:kind agent)) [:cfg :calibration] [:cfg]))
+
+(defn calibration-of
+  "The agent's {:temperature [per type] :temperature-by-options {bucket T}}."
+  [agent]
+  (get-in agent (calibration-path agent)))
+
 (defn with-calibration
   "The agent with refitted temperatures (lev.calibrate's {:temperature
-  [per type] :temperature-by-options {bucket T}}) over the checkpoint's
-  own, bucket by bucket."
+  [per type] :temperature-by-options {bucket T}}) over its own, bucket by
+  bucket."
   [agent {:keys [temperature temperature-by-options]}]
-  (cond-> agent
-    temperature (assoc-in [:cfg :temperature] (vec temperature))
-    temperature-by-options (update-in [:cfg :temperature-by-options] merge temperature-by-options)))
+  (let [path (calibration-path agent)]
+    (cond-> agent
+      temperature (assoc-in (conj path :temperature) (vec temperature))
+      temperature-by-options (update-in (conj path :temperature-by-options) merge temperature-by-options))))
 
 (defn temperature-for
   "The calibration temperature for a question type and option count: the
@@ -332,6 +345,16 @@
               (-> (dissoc pq :ids :markers)
                   (assoc :k k :logits (vec (take k logits)) :act (vec act) :tokens (count ids)))))
           prepared outputs)))
+
+(defmulti forward
+  "Any agent on state + questions, before calibration: one map per
+  question, in order, with at least {:qid :qdef :q :qtype :k :logits (the
+  k option scores in answer order, a noul's [false true])}. What
+  lev.calibrate refits on; an encoder's is encoder-forward, a thinker's
+  is in lev.think."
+  (fn [agent _state _questions] (:kind agent)))
+
+(defmethod forward :encoder [agent state questions] (encoder-forward agent state questions))
 
 (defn- rotations
   "The choice question `qdef` with its options rotated r places, for r in

@@ -176,9 +176,9 @@
   (into {} (map (fn [[k v]] [(if (keyword? k) (clojure.core/name k) (str k)) (str v)])) (:encoders config)))
 
 (defn calibrations
-  "Calibration files (lev.calibrate) per encoder: config.edn :calibration
-  {name path}; --calibration PATH or LEV_CALIBRATION applies one file to
-  every encoder."
+  "Calibration files (lev.calibrate) per model, an encoder's or a
+  thinker's: config.edn :calibration {name path}; --calibration PATH or
+  LEV_CALIBRATION applies one file to every encoder."
   [{:keys [opts env config]}]
   (let [per (into {} (map (fn [[k v]] [(if (keyword? k) (clojure.core/name k) (str k)) (str v)])) (:calibration config))
         cli (get opts "--calibration")

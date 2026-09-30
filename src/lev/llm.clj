@@ -87,22 +87,49 @@
           (throw (ex-info (str "escape failed: " (error* (:p m))) {:type :llm-error})))
         (ffi/ptr->string out)))))
 
+(def templates
+  "The chat formats a thinker's prompt can take, by name: how a turn is
+  written, how the assistant's turn opens, the thought tags (open, closed
+  empty, the closing tag `decide` waits for), what separates a closed
+  thought from the answer, and the turn's end (what closes a scored
+  answer). chatml is Qwen's and MiniCPM's; gemma4 is Gemma 4's (and
+  Winnow's), whose empty thought is `<|channel>thought\\n<channel|>`."
+  {"chatml" {:open "<|im_start|>" :close "<|im_end|>\n" :roles {}
+             :assistant "<|im_start|>assistant\n"
+             :think-open "<think>\n" :think-closed "<think>\n\n</think>" :think-end "</think>"
+             :after-thought "\n\n" :answer-end "<|im_end|>"}
+   "gemma4" {:open "<|turn>" :close "<turn|>\n" :roles {"assistant" "model"}
+             :assistant "<|turn>model\n"
+             :think-open "<|channel>thought\n" :think-closed "<|channel>thought\n<channel|>" :think-end "<channel|>"
+             :after-thought "" :answer-end "<turn|>"}})
+
+(defn template
+  "The chat format named `t` (default chatml); throws on an unknown name."
+  [t]
+  (let [k (if (keyword? t) (name t) (str (or t "chatml")))]
+    (or (get templates k)
+        (throw (ex-info (str "unknown chat template " (pr-str t) "; choose one of " (str/join ", " (sort (keys templates))))
+                        {:type :invalid-config :template t})))))
+
 (defn chat-prompt
-  "ChatML for `messages` ({:role :content}, string keys accepted) through
-  the assistant turn. opts :thinking (true: the open thought tag, for
-  `decide` to close; false: the closed empty thought, so the model
+  "`messages` ({:role :content}, string keys accepted) through the
+  assistant turn, in the chat format opts :template names (chatml by
+  default, see `templates`). opts :thinking (true: the open thought tag,
+  for `decide` to close; false: the closed empty thought, so the model
   answers at once; nil: neither). Either way what follows the closing
-  tag is the answer prefix (\"\\n\\nANSWER: \" by default), so a decided
-  answer is always scored after `</think>\\n\\nANSWER: `, the shape the
-  template produces."
-  [_m messages {:keys [thinking]}]
-  (let [turn (fn [{:keys [role content] :as msg}]
-               (str "<|im_start|>" (or role (get msg "role")) "\n" (or content (get msg "content")) "<|im_end|>\n"))]
+  tag is the answer prefix (\"\\n\\nANSWER: \" by default for chatml), so
+  a decided answer is always scored after `</think>\\n\\nANSWER: `, the
+  shape the template produces."
+  [_m messages {:keys [thinking] :as opts}]
+  (let [{:keys [open close roles assistant think-open think-closed]} (template (:template opts))
+        turn (fn [{:keys [role content] :as msg}]
+               (let [role (or role (get msg "role"))]
+                 (str open (get roles role role) "\n" (or content (get msg "content")) close)))]
     (str (apply str (map turn messages))
-         "<|im_start|>assistant\n"
+         assistant
          (case thinking
-           true "<think>\n"
-           false "<think>\n\n</think>"
+           true think-open
+           false think-closed
            ""))))
 
 (defn generate

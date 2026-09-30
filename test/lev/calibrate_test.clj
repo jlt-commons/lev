@@ -6,6 +6,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [lev.agent :as ag]
             [lev.calibrate :as cal]
+            [lev.think :as think]
             [lev.test-util :as tu]))
 
 (defn- lcg [seed]
@@ -71,3 +72,35 @@
     (testing "bad labels are refused with the question named"
       (is (thrown-with-msg? Exception #"team" (cal/collect agent [(assoc-in (first cases) ["labels" "team"] "legal")])))
       (is (thrown-with-msg? Exception #"anger" (cal/collect agent [(assoc-in (first cases) ["labels" "anger"] 7)]))))))
+
+(deftest a-thinker-is-refit-like-an-encoder
+  (let [t (think/thinker {:name "fake" :thinking false :jev false}
+                         {:decide (fn [_ options _] {:logp (vec (map-indexed (fn [i _] (- (* 2.0 i))) options)) :thought "" :tokens 0})
+                          :count-tokens (constantly 1)})
+        cases [{"state" "Refund me before Friday or we cancel."
+                "questions" {"churn" {"type" "noul" "instructions" "Does the customer threaten to leave?"}
+                             "team" {"type" "choice" "instructions" "Which team?" "criteria" {"billing" "money" "legal" nil "other" nil}}}
+                "labels" {"churn" false "team" "legal"}}]
+        items (cal/collect t cases)]
+    (is (= ["noul:2" "choice:3-5"] (map :bucket items)))
+    (is (= [[-2.0 0.0] [0.0 -2.0 -4.0]] (map :logits items)) "the raw scores, a noul's as [false true]")
+    (is (= [0 1] (map :label items)))
+    (let [fitted (cal/calibration items)
+          refit (ag/with-calibration t fitted)]
+      (is (every? #(> % 1.0) (vals (:temperature-by-options fitted))) "confidently wrong: the fit softens")
+      (is (= (:temperature-by-options fitted) (:temperature-by-options (ag/calibration-of refit))))
+      (is (< (get-in (think/system-one refit "Refund me." {"churn" (get-in (first cases) ["questions" "churn"])} nil)
+                     ["answers" "churn" "confidence"])
+             (get-in (think/system-one t "Refund me." {"churn" (get-in (first cases) ["questions" "churn"])} nil)
+                     ["answers" "churn" "confidence"]))))))
+
+(deftest a-gold-distribution-is-fit-by-cross-entropy
+  (testing "the NLL of an item with a target is its cross-entropy"
+    (let [item {:logits [2.0 0.0] :label 0 :target [0.6 0.4]}
+          p (cal/softmax [2.0 0.0])]
+      (is (< (Math/abs (- (cal/nll [item] 1.0)
+                          (- (+ (* 0.6 (Math/log (first p))) (* 0.4 (Math/log (second p)))))))
+             1e-12))))
+  (testing "soft gold pulls the temperature to where the model's spread matches it"
+    (let [items (vec (for [x [1.0 2.0 3.0 4.0]] {:logits [x 0.0] :label 0 :target (cal/softmax [(/ x 4.0) 0.0])}))]
+      (is (< (Math/abs (- 4.0 (cal/fit-temperature items))) 0.01)))))

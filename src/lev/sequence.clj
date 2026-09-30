@@ -92,21 +92,25 @@
   "Serialize v like Python json.dumps(v) with the default separators
   (\", \" and \": \"). ensure_ascii defaults to FALSE here because the
   state is serialized that way (serialize_state); pass {:ensure-ascii true}
-  for json.dumps' own default (_to_internal's instructions)."
+  for json.dumps' own default (_to_internal's instructions), {:compact
+  true} for separators=(\",\", \":\"), where NaN and infinities are null
+  (nlohmann's dump, what Winnow's prompt uses)."
   ([v] (json-str v {}))
-  ([v {:keys [ensure-ascii] :as opts}]
-   (cond
-     (string? v) (str "\"" (json-escape v ensure-ascii) "\"")
-     (keyword? v) (json-str (name v) opts)
-     (map? v) (str "{" (str/join ", " (map (fn [[k val]]
-                                              (str (json-str (jkey k) opts) ": " (json-str val opts)))
-                                            v)) "}")
-     (or (sequential? v) (set? v)) (str "[" (str/join ", " (map #(json-str % opts) v)) "]")
-     (boolean? v) (if v "true" "false")
-     (nil? v) "null"
-     (integer? v) (str v)
-     (number? v) (py-float-str v)
-     :else (json-str (str v) opts))))
+  ([v {:keys [ensure-ascii compact] :as opts}]
+   (let [[comma colon] (if compact ["," ":"] [", " ": "])]
+     (cond
+       (string? v) (str "\"" (json-escape v ensure-ascii) "\"")
+       (keyword? v) (json-str (name v) opts)
+       (map? v) (str "{" (str/join comma (map (fn [[k val]]
+                                                (str (json-str (jkey k) opts) colon (json-str val opts)))
+                                              v)) "}")
+       (or (sequential? v) (set? v)) (str "[" (str/join comma (map #(json-str % opts) v)) "]")
+       (boolean? v) (if v "true" "false")
+       (nil? v) "null"
+       (integer? v) (str v)
+       (and compact (number? v) (or (Double/isNaN (double v)) (Double/isInfinite (double v)))) "null"
+       (number? v) (py-float-str v)
+       :else (json-str (str v) opts)))))
 
 (defn serialize-state [state]
   (if (string? state) state (json-str state)))
