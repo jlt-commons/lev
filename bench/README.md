@@ -367,6 +367,41 @@ against a gold 51%. The two fine-tuned thinkers lean the same way less
 Not recorded: latency. The GPU was shared with another session's bench
 during these runs.
 
+## Winnow-E4B on lev's benches (2026-09-29)
+
+Winnow-E4B Q8 (the `winnow` prompt, `gemma4` template, T 1.2574, Jev
+mode, Metal) against Qwen3.5-4B Q8, the escalation model (lev prompt,
+numbers from the sections above).
+
+| | authored144 | balanced | ECE | perturbations108 | trio (AG News / BoolQ / SST-5) | typed-decisions |
+|---|---|---|---|---|---|---|
+| Qwen3.5-4B | **95.1% (137)** | 93.3% | 0.034 | 79.6% | **74.2% (89)**: 87.5 / 87.5 / 47.5 | 0.588 |
+| Winnow-E4B | 93.1% (134) | **93.8%** | 0.034 | **97.2% (105)** | 71.7% (86): 85.0 / 80.0 / 50.0 | **0.724** |
+
+The two models' authored144 escalation, simulated from per-case
+results: `english` answers first, and the cases below the gate take the
+thinker's answer.
+
+| gate | escalated | to Qwen3.5-4B | to Winnow-E4B |
+|---|---|---|---|
+| 0.3 | 99 / 144 | 89.6% | 86.1% |
+| 0.5 | 126 / 144 | 92.4% | 90.3% |
+| 0.7 | 141 / 144 | 95.1% | 92.4% |
+
+Winnow-E4B gives up three authored144 cases and three trio cases to
+Qwen3.5-4B. It holds up far better on the output-blind perturbations of
+authored144 (+17.6 points) and on typed-decisions (+13.6). It is
+calibrated as shipped (ECE 0.025 on typed-decisions against Qwen's 0.232
+before a fit). It is also nearly twice the file (8.0 GB against 4.5 GB),
+and its Gemma 4 sliding-window layers want a small `:n-seq-max` (8
+here).
+
+Latency is not compared: the GPU was shared with another session's
+bench (Winnow-E4B read 470 ms a case on authored144 under that load). So
+the escalation default stays Qwen3.5-4B until both are timed on a quiet
+machine, with Winnow-E4B the choice where robustness to rephrasing or
+structured states matters more than authored144.
+
 ## Measuring a change: `bench/paired.clj`
 
 A sequential before/after (two processes, one after the other) confounds
