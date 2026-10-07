@@ -399,7 +399,9 @@ and `:calibration` works as it does for a thinker. Clef is calibrated as
 shipped (ECE 0.024 on typed-decisions), so T 1 is the default. The
 state is cut from its end when the prompt would pass `:n-ctx`, and the
 answer then says so under `truncated`. Images and video, which the
-release also takes, are not supported here.
+release also takes, are not supported here. `jolt clef-golden`
+regenerates the parity fixtures in `golden/clef` from the release's own
+torch head and tokenizer (through `uv`).
 
 On lev's benches (`bench/README.md`, M1 Max, Metal) Clef scores 93.1% on
 authored144 and 100% on its rephrasings. It scores 75.8% on the AG News

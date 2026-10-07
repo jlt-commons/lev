@@ -14,6 +14,7 @@ token ids index. Writes golden/clef/:
                :span :option-spans :option-ids}]}: encode_record on a
                request, with the release's own tokenizer (tokenizer.json)
 
+    jolt clef-golden                                   # LEV_TEST_CLEF, else ~/src/models/clef
     python bench/clef_golden.py /path/to/clef [golden/clef]
 
 Needs torch, safetensors and transformers; the head alone is loaded, not
