@@ -334,8 +334,6 @@ ollaya does.
 |---|---|---|---|---|---|---|---|---|
 | encoder `typed-decisions` (trained on this train split) | **0.766** | 0.733 | 0.723 | 0.857 | **0.117** | **0.061** | 0.213 | 51.5% |
 | thinker Winnow-E4B Q8, `winnow` prompt, `gemma4`, T 1.2574 (the author's) | **0.724** | 0.697 | 0.686 | 0.802 | 0.294 | 0.132 | **0.025** | 60.7% |
-| Clef Q8 (lev.clef: Qwen3.8-27B + joint schema head), T 1 | 0.722 | 0.643 | 0.688 | 0.847 | 0.191 | 0.103 | **0.024** | 57.8% |
-| thinker Qwen3.8-27B Q8, lev prompt, Jev mode, T 1 | 0.695 | 0.608 | 0.699 | 0.777 | 0.844 | 0.233 | 0.149 | 52.5% |
 | thinker JevK5 v0.3 4B Q8, `jevk5` prompt, T 1.22 (the author's) | 0.626 | 0.567 | 0.578 | 0.750 | 0.406 | 0.198 | 0.096 | 58.2% |
 | thinker Qwen3.5-4B Q8, lev prompt, Jev mode, fitted T (5.07 / 3.82 / 2.88) | 0.588 | 0.560 | 0.526 | 0.698 | 0.287 | 0.152 | 0.058 | 52.7% |
 | thinker Qwen3.5-4B Q8, lev prompt, Jev mode, T 1 | 0.588 | 0.560 | 0.526 | 0.698 | 1.045 | 0.322 | 0.232 | 52.7% |
@@ -403,73 +401,6 @@ bench (Winnow-E4B read 470 ms a case on authored144 under that load). So
 the escalation default stays Qwen3.5-4B until both are timed on a quiet
 machine, with Winnow-E4B the choice where robustness to rephrasing or
 structured states matters more than authored144.
-
-## Clef on lev's benches (2026-10-07)
-
-[Clef](https://huggingface.co/Cloudflare/clef) is Cloudflare's decision
-model: Qwen3.8-27B post-trained, with a joint schema head (a 128M-parameter
-transformer) in place of generation. The state and every question with its
-options go into one prompt. The head reads the backbone's final hidden
-state at every token, routes evidence to each option, lets the questions
-attend to each other and answers one logit per option of every question
-at once. No text is generated. In lev it is `lev.clef`, a thinker entry
-with `:engine "clef"`:
-
-```
-python native/llama.cpp/convert_hf_to_gguf.py ~/src/models/clef --no-mtp --outtype q8_0 \
-  --outfile ~/src/models/clef-backbone-Q8_0.gguf
-;; config.edn :thinkers
-"clef" {:engine "clef" :model ".../clef-backbone-Q8_0.gguf" :head ".../clef"}
-```
-
-The hidden states come from the fork's unmasked nextn embeddings
-(`native/lev_clef.cpp`). The head runs in f32 over cblas and is held to
-the release's torch head at 1e-4 (`bench/clef_golden.py` ->
-`golden/clef`). The prompt matches the release tokenizer's token for
-token. Answers are T 1, as shipped.
-
-Against the escalation model, Winnow-E4B (sections above) and Clef's own
-base as a thinker answering at once (lev prompt, Jev mode, T 1). M1 Max,
-Metal, Q8 throughout.
-
-| | size | authored144 | balanced | ECE | perturbations108 | trio (AG News / BoolQ / SST-5) | typed-decisions (ECE) | ms a case (authored144) |
-|---|---|---|---|---|---|---|---|---|
-| Qwen3.5-4B | 4.5 GB | **95.1% (137)** | 93.3% | 0.034 | 79.6% | 74.2% (89): 87.5 / 87.5 / 47.5 | 0.588 (0.232) | **184** |
-| Winnow-E4B | 8.0 GB | 93.1% (134) | 93.8% | 0.034 | 97.2% (105) | 71.7% (86): 85.0 / 80.0 / 50.0 | **0.724** (0.025) | |
-| Qwen3.8-27B | 28.6 GB | 89.6% (129) | 88.6% | 0.037 | 92.6% (100) | **77.5% (93)**: 87.5 / 92.5 / 52.5 | 0.695 (0.149) | 1,506 |
-| Clef | 28.6 GB | 93.1% (134) | **95.7%** | 0.053 | **100% (108)** | 75.8% (91): 87.5 / 92.5 / 47.5 | 0.722 (**0.024**) | 1,612 |
-
-authored144 escalation, simulated from per-case results as above
-(`english` first, the cases below the gate take the other model's answer):
-
-| gate | escalated | to Qwen3.5-4B | to Winnow-E4B | to Qwen3.8-27B | to Clef |
-|---|---|---|---|---|---|
-| 0.3 | 99 / 144 | 89.6% | 86.1% | 83.3% | 86.1% |
-| 0.5 | 126 / 144 | 92.4% | 90.3% | 86.8% | 90.3% |
-| 0.7 | 141 / 144 | 95.1% | 92.4% | 88.9% | 92.4% |
-
-Clef's post-training and head are worth a lot over its base. Against
-Qwen3.8-27B it gains 5 authored144 cases (rule application 75.0% ->
-91.7%), 8 perturbations (to every one of them) and 0.027 typed-decisions
-accuracy. Its typed-decisions KL drops from 0.844 to 0.191 and its ECE
-from 0.149 to 0.024, with no refit. It gives two SST-5 cases back on the
-trio. Its confidence is informative: at >= 0.7 on authored144 it keeps
-113 of 144 cases at 100%.
-
-Against the 4B models, Clef ties Winnow-E4B on authored144 (93.1%) and
-on typed-decisions (0.722 / 0.724). It is ahead on the perturbations and
-on the trio, and it is the best-calibrated general model here. Qwen3.5-4B
-keeps two authored144 cases on it, and Clef is behind it in every
-escalation row.
-
-Clef does not become the escalation model. It is 6x the memory of
-Qwen3.5-4B and 9x its time a case on authored144 (1.6 s against 184 ms,
-timed back to back on the same machine; 8.8 s a five-question
-typed-decisions state), and it loses authored144. Where it earns its cost is a decision model on its own:
-rephrased or structured inputs, several questions decided together, and
-probabilities that can be trusted as shipped. The README's Decision Index
-lead over Jev does not carry over at this scale of test: on
-typed-decisions Clef and Jev's published 0.727 are even.
 
 ## Measuring a change: `bench/paired.clj`
 
