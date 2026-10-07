@@ -28,6 +28,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [lev.agent :as ag]
+            [lev.clef :as clef]
             [lev.llm :as llm]
             [lev.sequence :as seq]))
 
@@ -99,27 +100,34 @@
       :else (throw (ex-info (str "thinker :calibration " (pr-str c) " is not a temperature, three of them, a calibration map or its file")
                             {:type :invalid-config :calibration c})))))
 
+(defn- thinker* [cfg backing]
+  (let [cfg (merge defaults cfg)
+        _ (llm/template (:template cfg))                    ; an unknown one fails at load
+        cfg (update cfg :calibration calibration-map)
+        backing (or backing
+                    (let [m (llm/load (:model cfg) (select-keys cfg [:n-ctx :n-gpu-layers :threads :n-seq-max]))]
+                      {:llm m
+                       :decide (fn [prompt options opts] (llm/decide m prompt options opts))
+                       :jev (fn [req] (llm/jev m req))
+                       :escape (fn [text] (llm/escape m text))
+                       :count-tokens (fn [text] (llm/count-tokens m text))
+                       ;; the router calls this when it evicts or unloads the thinker
+                       :close (fn [_] (llm/free! m))}))]
+    (merge {:kind :thinker :name (or (:name cfg) "thinker") :cfg cfg} backing)))
+
 (defn thinker
   "A thinker agent from its config ({:name :model (a GGUF path) :thinking
   :max-think-tokens :n-ctx :n-gpu-layers :threads :temperature :top-p
   :min-p :seed :system :prompt :template :calibration}); with `backing`
   ({:decide :count-tokens}) the model is whatever those fns are (tests),
-  else the GGUF is loaded through lev.llm."
+  else the GGUF is loaded through lev.llm. :engine \"clef\" makes a Clef
+  agent instead (lev.clef: the GGUF is its backbone, :head its release
+  directory), which the router then serves like any thinker."
   ([cfg] (thinker cfg nil))
   ([cfg backing]
-   (let [cfg (merge defaults cfg)
-         _ (llm/template (:template cfg))                    ; an unknown one fails at load
-         cfg (update cfg :calibration calibration-map)
-         backing (or backing
-                     (let [m (llm/load (:model cfg) (select-keys cfg [:n-ctx :n-gpu-layers :threads :n-seq-max]))]
-                       {:llm m
-                        :decide (fn [prompt options opts] (llm/decide m prompt options opts))
-                        :jev (fn [req] (llm/jev m req))
-                        :escape (fn [text] (llm/escape m text))
-                        :count-tokens (fn [text] (llm/count-tokens m text))
-                        ;; the router calls this when it evicts or unloads the thinker
-                        :close (fn [_] (llm/free! m))}))]
-     (merge {:kind :thinker :name (or (:name cfg) "thinker") :cfg cfg} backing))))
+   (if (= "clef" (some-> (:engine cfg) name))
+     (clef/clef (-> (dissoc cfg :engine) (update :calibration calibration-map)))
+     (thinker* cfg backing))))
 
 (defn- key-str [k] (if (keyword? k) (name k) (str k)))
 

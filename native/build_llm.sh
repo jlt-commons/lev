@@ -13,13 +13,16 @@ LIBS="$L/build/common/libllama-common.a $L/build/common/libllama-common-base.a $
 INC="-I$L/include -I$L/ggml/include -I$L/common -I$L/vendor -I$L/tools/parallel-decision -Inative"
 CFLAGS="-O2 -std=c11 -Wall -Wextra -DLEV_LLAMA_BUILD=\"$TAG\" $INC"
 CXXFLAGS="-O2 -std=c++17 -Wall $INC"
-OBJS="native/lev_llm.o native/lev_decision.o native/decision-engine.o"
+# lev_clef.cpp reads hidden states through the staging header in src/
+CLEF_INC="-I$L/src"
+OBJS="native/lev_llm.o native/lev_decision.o native/lev_clef.o native/decision-engine.o"
 case "$(uname -s)" in
   Darwin)
     LIBS="$LIBS $L/build/ggml/src/ggml-metal/libggml-metal.a"
     FRAMEWORKS="-framework Metal -framework Foundation -framework MetalKit -framework Accelerate"
     cc $CFLAGS -c native/lev_llm.c -o native/lev_llm.o
     c++ $CXXFLAGS -c native/lev_decision.cpp -o native/lev_decision.o
+    c++ $CXXFLAGS $CLEF_INC -c native/lev_clef.cpp -o native/lev_clef.o
     c++ $CXXFLAGS -w -c $L/tools/parallel-decision/decision-engine.cpp -o native/decision-engine.o
     c++ -dynamiclib $OBJS $LIBS $FRAMEWORKS -o native/liblev_llm.dylib
     # one archive with every llama.cpp member inside, for jolt build's force-load
@@ -35,6 +38,7 @@ case "$(uname -s)" in
   *)
     cc $CFLAGS -fPIC -c native/lev_llm.c -o native/lev_llm.o
     c++ $CXXFLAGS -fPIC -c native/lev_decision.cpp -o native/lev_decision.o
+    c++ $CXXFLAGS $CLEF_INC -fPIC -c native/lev_clef.cpp -o native/lev_clef.o
     c++ $CXXFLAGS -w -fPIC -c $L/tools/parallel-decision/decision-engine.cpp -o native/decision-engine.o
     c++ -shared $OBJS -Wl,--whole-archive $LIBS -Wl,--no-whole-archive -lm -lpthread -o native/liblev_llm.so
     printf 'create native/liblev_llm.a\n' > native/llm.mri
