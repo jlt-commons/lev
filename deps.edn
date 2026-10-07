@@ -137,7 +137,7 @@
              (shell "cmake" "--build" (str dir "/build") "--target" "llama" "llama-common"
                     "--parallel" (str (.availableProcessors (Runtime/getRuntime)))))
            (if (and (fs/exists? lib) (fs/exists? "native/liblev_llm.a")
-                    (empty? (fs/modified-since lib ["native/lev_llm.c" "native/lev_llm.h" "native/lev_decision.cpp" "native/build_llm.sh" head])))
+                    (empty? (fs/modified-since lib ["native/lev_llm.c" "native/lev_llm.h" "native/lev_decision.cpp" "native/lev_clef.cpp" "native/build_llm.sh" head])))
              (println "llm: up to date -" lib "native/liblev_llm.a")
              (shell "sh" "native/build_llm.sh" rev)))}
 
@@ -161,6 +161,16 @@
                     (empty? (fs/modified-since lib ["native/lev_mlx.c" "native/build_mlx.sh"])))
              (println "mlx: up to date -" lib "native/liblev_mlx.a native/mlx.metallib")
              (shell "sh" "native/build_mlx.sh")))}
+
+  clef-golden
+  {:doc "regenerate golden/clef from the Clef release's own torch head and tokenizer (bench/clef_golden.py through uv; LEV_TEST_CLEF is the release directory, else ~/src/models/clef)"
+   :task (let [dir (or (System/getenv "LEV_TEST_CLEF") (str (System/getProperty "user.home") "/src/models/clef"))]
+           (when-not (fs/exists? (str dir "/joint_head.safetensors"))
+             (throw (ex-info (str "no Clef release under " dir " (hf download Cloudflare/clef, or set LEV_TEST_CLEF)") {})))
+           ;; the versions golden/clef was generated with
+           (shell "uv" "run" "--no-project" "--python" "3.12"
+                  "--with" "torch==2.14.1" "--with" "transformers==5.19.0" "--with" "safetensors==0.8.0" "--with" "numpy==2.5.3"
+                  "python" "bench/clef_golden.py" dir "golden/clef"))}
 
   binary
   {:doc "build the standalone HTTP server ./lev-server (kernels and llama.cpp linked in, mlx too when native/liblev_mlx.a is built) and self-test it against golden/"

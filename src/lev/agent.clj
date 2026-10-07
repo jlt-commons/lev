@@ -233,8 +233,8 @@
                     ["violations" (mapv #(c/canonical (nth nodes %)) (:violations sol))]]))
 
 (defmulti system-one*
-  "The engine behind system-one, by the agent's :kind: :encoder (here)
-  or :thinker (lev.think)."
+  "The engine behind system-one, by the agent's :kind: :encoder (here),
+  :thinker (lev.think) or :clef (lev.clef)."
   (fn [agent _state _questions _opts] (:kind agent :encoder)))
 
 (defn system-one
@@ -272,10 +272,11 @@
 
 (defn- calibration-path
   "Where an agent keeps its temperatures: an encoder's are its
-  checkpoint config's; a thinker's sit under its config's :calibration,
-  since its :temperature is the sampling one."
+  checkpoint config's; a thinker's (and a Clef model's, lev.clef) sit
+  under its config's :calibration, since its :temperature is the
+  sampling one."
   [agent]
-  (if (= :thinker (:kind agent)) [:cfg :calibration] [:cfg]))
+  (if (#{:thinker :clef} (:kind agent)) [:cfg :calibration] [:cfg]))
 
 (defn calibration-of
   "The agent's {:temperature [per type] :temperature-by-options {bucket T}}."

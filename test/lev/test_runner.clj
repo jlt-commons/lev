@@ -10,6 +10,7 @@
     lev.constraints-test
     lev.llm-test
     lev.think-test
+    lev.clef-test
     lev.patterns-test
     lev.calibrate-test
     workflows.email-test
