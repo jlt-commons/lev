@@ -137,7 +137,7 @@
              (shell "cmake" "--build" (str dir "/build") "--target" "llama" "llama-common"
                     "--parallel" (str (.availableProcessors (Runtime/getRuntime)))))
            (if (and (fs/exists? lib) (fs/exists? "native/liblev_llm.a")
-                    (empty? (fs/modified-since lib ["native/lev_llm.c" "native/lev_llm.h" "native/lev_decision.cpp" "native/build_llm.sh" head])))
+                    (empty? (fs/modified-since lib ["native/lev_llm.c" "native/lev_llm.h" "native/lev_decision.cpp" "native/lev_clef.cpp" "native/build_llm.sh" head])))
              (println "llm: up to date -" lib "native/liblev_llm.a")
              (shell "sh" "native/build_llm.sh" rev)))}
 
