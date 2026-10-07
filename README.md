@@ -18,6 +18,10 @@ Two kinds of model sit behind Lev API:
   answers 95% without thinking, in Jev mode at ~170 ms a question, against
   the encoders' 61 to 67%. MiniCPM5-2B reaches the same 95% by thinking
   first, in seconds.
+- **Clef**: [Cloudflare/clef](https://huggingface.co/Cloudflare/clef),
+  Qwen3.8-27B with a joint schema head instead of generation. It decides
+  every question of a call together from one pass over the prompt. It is
+  configured like a thinker (see Clef, below).
 
 A request either names its model, like `"model": "english"` or
 `"model": "qwen3.5-4b"`, or gets routed by content to an encoder. A
@@ -118,7 +122,8 @@ Where robustness matters more than speed, [EldanRing/Winnow-E4B](https://hugging
 (`gguf/Winnow-E4B-Q8_0.gguf`, 8.0 GB) with the `winnow` prompt scores
 97.2% on authored144's rephrasings against Qwen3.5-4B's 79.6%, and 0.724
 on typed-decisions against 0.588. It gives up 2 points on authored144
-itself and is larger and slower (Thinkers, below).
+itself and is larger and slower (Thinkers, below). Clef, a 27B decision
+model, is set up differently: see Clef, below.
 
 ```
 hf download bartowski/Qwen_Qwen3.5-4B-GGUF Qwen_Qwen3.5-4B-Q8_0.gguf --local-dir ~/models
@@ -353,6 +358,57 @@ is escaped before it reaches either path: a control token's text such as
 can't close its turn and write the next one (`lev.llm/escape`). An empty
 state goes the per-question path, since the engine's contexts can't be
 empty.
+
+### Clef
+
+[Cloudflare/clef](https://huggingface.co/Cloudflare/clef) (Apache-2.0)
+is Qwen3.8-27B post-trained as a decision model. It has a joint schema
+head in place of text generation. The state and every question with its
+options go into one prompt. The head reads the backbone's final hidden
+state at every token and scores every option of every question at once,
+letting the questions attend to each other. Nothing is generated, so
+`thinking` and `:prompt` do not apply. `lev.clef` runs the backbone through the
+same llama.cpp as the thinkers and the head on the CPU in f32.
+
+Download the release and convert its backbone to a GGUF with the
+converter in `native/llama.cpp` (after `jolt llama`). It needs `torch`,
+`transformers` and `safetensors`. The release has no multi-token
+prediction layers, so pass `--no-mtp`:
+
+```
+hf download Cloudflare/clef --local-dir ~/models/clef        # ~54 GB of bf16 safetensors
+python native/llama.cpp/convert_hf_to_gguf.py ~/models/clef --no-mtp --outtype q8_0 \
+  --outfile ~/models/clef-backbone-Q8_0.gguf                 # 28.6 GB
+```
+
+Then add it as a thinker with `:engine "clef"`. `:model` is the
+backbone GGUF and `:head` is the release directory, which holds
+`joint_head.safetensors` and `joint_head_config.json`:
+
+```clojure
+{:thinkers {"clef" {:engine "clef"
+                    :model "/Users/me/models/clef-backbone-Q8_0.gguf"
+                    :head "/Users/me/models/clef"
+                    :n-ctx 16384}}}          ; the prompt's bound (the release's max_length); the default
+```
+
+After the conversion, lev reads only the GGUF (which carries the
+tokenizer) and the two `joint_head.*` files, so the safetensors shards
+can go. A request names it like any model (`"model": "clef"`),
+and `:calibration` works as it does for a thinker. Clef is calibrated as
+shipped (ECE 0.024 on typed-decisions), so T 1 is the default. The
+state is cut from its end when the prompt would pass `:n-ctx`, and the
+answer then says so under `truncated`. Images and video, which the
+release also takes, are not supported here.
+
+On lev's benches (`bench/README.md`, M1 Max, Metal) Clef scores 93.1% on
+authored144 and 100% on its rephrasings. It scores 75.8% on the AG News
+/ BoolQ / SST-5 trio and 0.722 on typed-decisions. Qwen3.5-4B scores
+95.1%, 79.6%, 74.2% and 0.588. Clef takes 1.6 s a case against 184 ms
+and needs ~30 GB of memory, so the escalation model stays Qwen3.5-4B.
+Clef is the choice for a decision model on its own, where rephrased or
+structured inputs, many questions decided together, or probabilities
+trusted as shipped matter more than speed.
 
 ## Context: what the model sees
 
