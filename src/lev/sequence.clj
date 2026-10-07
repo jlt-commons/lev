@@ -45,6 +45,19 @@
             digits (if (= "" digits) "0" digits)
             ;; digits before the decimal point when value = 0.D x 10^decpt
             decpt (- (+ (count ip) e) lead)
+            ;; Chez's digits are not always the shortest for a subnormal
+            ;; (4.9E-324 where Python writes 5e-324): take the fewest digits,
+            ;; rounded, that still read back as x
+            [digits decpt] (or (when (< (Math/abs x) 2.2250738585072014e-308)
+                                 (some (fn [n]
+                                       (let [head (Long/parseLong (subs digits 0 n))
+                                             up? (>= (Character/digit (.charAt ^String digits n) 10) 5)
+                                             r (str (if up? (inc head) head))
+                                             [r dp] (if (> (count r) n) [(subs r 0 n) (inc decpt)] [r decpt])
+                                             r (let [t (str/replace r #"0+$" "")] (if (= "" t) "0" t))]
+                                         (when (= x (Double/parseDouble (str "0." r "E" dp))) [r dp])))
+                                       (range 1 (count digits))))
+                               [digits decpt])
             nd (count digits)
             body (if (or (<= decpt -4) (> decpt 16))
                    (let [ex (dec decpt)]
