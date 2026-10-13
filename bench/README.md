@@ -680,15 +680,18 @@ What this says:
   its rule left out the `Input/output error` that marks the one APPOUT
   alert.
 - **Free text.** The cutoff matters more than anything else. The
-  encoder's yes/no for "toxic" sits low (it says yes to fewer than half
-  the toxic comments at 0.5), and fitting the one cutoff on 400 labelled
+  encoder's yes/no for "toxic" sits low (at 0.5 it says yes to only 103
+  of the 200 toxic comments), and fitting the one cutoff on 400 labelled
   comments takes it from 0.755 to 0.933. Splitting the judgement into
   facet questions and word lists fit train better (0.953 against 0.938)
   but lost on test, at five questions a comment instead of one.
-- **A model writing free-text programs overfits.** Qwen3.8-27B's word
+- **A model writing free-text programs memorises.** Qwen3.8-27B's word
   list is mostly whole train phrases ("happy clients", "tennis", "okay").
-  It fires on 17% of test comments and is wrong on many of them. Fitting
-  rescues the question's cutoff (0.905) but not the list.
+  On train it labels clean comments toxic: the program scores 0.705
+  there, below the bare question. On test it fires on 68 comments, 65 of
+  them toxic, so it is precise but covers little. The as-written program
+  loses on the cutoff it picked (0.6). Fitted to 0.34 it reaches 0.905,
+  still below the single fitted question.
 - **Escalation does not help here.** Qwen3.5-4B is worse than the fitted
   encoder on toxicity (0.708), so nothing was escalated to it.
 
