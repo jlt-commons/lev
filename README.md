@@ -667,6 +667,9 @@ POST /v1/route            same body, questions optional -> the routing decision 
 POST /v1/embed            {"state"} or {"states": [1-256]}, "model"?/"lang"? -> {"model", "embeddings": [[unit vector] ...],
                            "dimensions", "usage", "routing"}: an encoder's mean-pooled final states, for state
                            similarity (rank by cosine; bench/README.md has how good it is)
+POST /v1/program          {"program": {...}, "state"} or {.. "states": [1-256]}, "model"?/"lang"?
+                          -> {"label", "rule", "facts", ("answers", "model", "usage" when the model was asked)},
+                             or {"results": [...]}: a classifier written as data (lev.program, below)
 POST /v1/workflows/<name> {"input": <anything the workflow's state fn takes>, "options"?: {...}, "constraints"?: [...],
                            "on_infeasible"?: ..., "model"?/"lang"?/"task"?}
                           -> the systemone answer + "workflow" + the built "state"; the request's constraints
@@ -816,6 +819,34 @@ The one-question conveniences and the patterns, as a library (`lev.api`,
 (pat/two-stage-choice rt "Postgres replica lag" {"cloud" {"aws" "..." "gcp" "..."} "database" {"postgres" "..." "redis" "..."}} {})
 (pat/utility-choice rt incident (api/choice "Remedy?" ["restart" "rollback" "page-human"]) {:value 10 :costs {"page-human" 4}})
 ```
+
+A classifier can also be written as data, by a person or by a model
+from a sample of the inputs, and run deterministically (`lev.program`).
+Regex facts are matched first. A rule decided by facts alone never calls
+the model. Otherwise the encoder answers, in one call, the questions the
+remaining rules read. The first rule that holds names the label.
+`fit` sets the numeric cutoffs from labelled cases without asking the
+model again:
+
+```clojure
+(require '[lev.program :as prog])
+(def triage
+  {"labels" ["incident" "refund" "other"]
+   "extract" {"oom" "(?i)oom-killed|out of memory"}
+   "questions" {"refund" (api/noul "Does the customer ask for money back?")}
+   "rules" [{"when" {"fact" "oom"} "then" "incident"}
+            {"when" {"noul" "refund" ">=" 0.5} "then" "refund"}]
+   "default" "other"})
+(prog/run rt "pods OOM-killed on payments" triage)   ; {"label" "incident" "rule" 0 "facts" {"oom" true}}, no model call
+(prog/fit triage (map #(assoc (prog/observe rt (:text %) triage) "label" (:label %)) labelled))
+;; => {"program" <cutoffs fitted> "accuracy" .. "before" ..}
+```
+
+A condition is `{"fact" f}`, `{"noul" q ">=" p}` (or `>` `<=` `<`),
+`{"score" q ">=" x}`, `{"choice" q "is" o}` / `{"choice" q "in" [..]}`,
+or `all` / `any` / `not` over conditions. `"escalate" {"model" thinker}`
+re-asks unsure answers on a thinker. `bench/README.md` (programs) has
+what this buys on log lines and on comments.
 
 ### As a binary
 

@@ -621,3 +621,86 @@ the nearest neighbour here and needs a corpus mean. The signal is real
 anisotropic: any two states sit between ~0.82 and ~0.95. Rank by cosine;
 a fixed similarity cutoff is not portable between domains. Nothing here
 touches an answer's numbers.
+
+## Programs: classifiers written as data (`lev.program`, 2026-10-13)
+
+Can a model write a classifier once (regex facts, typed questions, ordered
+rules) that lev then runs deterministically, and does that beat asking the
+model the target question directly? `bench/program.clj` scores a program
+on a labelled split. `--fit` first answers every question on the train
+split and fits the rules' cutoffs there (`lev.program/fit`). Build the
+data with `uv run --with pyarrow python bench/program_data.py`:
+
+- `bgl-*` is LogHub's BGL_2k: Blue Gene/L RAS log lines, 12 hand-labelled
+  alert categories plus normal, alternated into halves (1,004 train, 996
+  test).
+- `toxic-*` is google/civil_comments: 200 toxic (≥ 0.5) and 200 clean
+  (< 0.1) comments a half. Train comes from the validation split, test
+  from the test split.
+
+The programs are in `bench/programs/`:
+
+- `*-direct` asks the target as one question.
+- `bgl-regex` and `toxic-facets` were written by hand from the train
+  half. `toxic-facets` has five facet questions (insult, identity,
+  threat, obscene and the direct one) plus three word-list facts.
+- `*-qwen27b` were written by Qwen3.8-27B through `bench/compile.clj`
+  (greedy, thinking off). It saw the format, the task and up to 8
+  distinct train inputs a label, and got the validator's error back: one
+  bad regex on toxicity, then fixed. Each program took about 4 minutes
+  of generation.
+
+Test half; macro F1 counts every label that is either gold or predicted:
+
+| BGL (996 lines) | accuracy | macro F1 | model calls | ms / line |
+|---|---|---|---|---|
+| `english`, direct 13-way choice | 0.286 | 0.309 | 996 | 227 |
+| Qwen3.5-4B, direct 13-way choice | 0.741 | 0.341 | 996 | 1,858 |
+| `bgl-qwen27b` (20 regex facts, no questions) | 0.990 | 0.846 | 0 | 0.1 |
+| `bgl-regex` (by hand) | **1.000** | **1.000** | 0 | 0.1 |
+
+| toxicity (400 comments) | accuracy | macro F1 | model calls |
+|---|---|---|---|
+| Qwen3.5-4B, direct, cutoff 0.5 | 0.695 | 0.693 | 400 |
+| Qwen3.5-4B, direct, cutoff fitted | 0.708 | 0.707 | 400 |
+| `english`, direct, cutoff 0.5 | 0.755 | 0.740 | 400 |
+| `toxic-qwen27b`, as written | 0.733 | 0.714 | 332 |
+| `toxic-qwen27b`, cutoff fitted (0.6 → 0.34) | 0.905 | 0.905 | 332 |
+| `toxic-facets`, cutoffs fitted | 0.920 | 0.920 | 400 |
+| `english`, direct, cutoff fitted (0.5 → 0.33) | **0.933** | **0.932** | 400 |
+
+What this says:
+
+- **Log lines.** BGL's alerts are fixed message templates, so regex
+  facts decide them outright. That is perfect accuracy, no model, and
+  about 2,000× faster than the encoder. The encoder's direct choice is
+  near useless on raw log lines. The 4B thinker is better but slow, and
+  it misses the rare classes. Qwen3.8-27B wrote a near-perfect program
+  unaided. Its only misses are ten `LOGIN chdir` lines labelled normal:
+  its rule left out the `Input/output error` that marks the one APPOUT
+  alert.
+- **Free text.** The cutoff matters more than anything else. The
+  encoder's yes/no for "toxic" sits low (at 0.5 it says yes to only 103
+  of the 200 toxic comments), and fitting the one cutoff on 400 labelled
+  comments takes it from 0.755 to 0.933. Splitting the judgement into
+  facet questions and word lists fit train better (0.953 against 0.938)
+  but lost on test, at five questions a comment instead of one.
+- **A model writing free-text programs memorises.** Qwen3.8-27B's word
+  list is mostly whole train phrases ("happy clients", "tennis", "okay").
+  On train it labels clean comments toxic: the program scores 0.705
+  there, below the bare question. On test it fires on 68 comments, 65 of
+  them toxic, so it is precise but covers little. The as-written program
+  loses on the cutoff it picked (0.6). Fitted to 0.34 it reaches 0.905,
+  still below the single fitted question.
+- **Escalation does not help here.** Qwen3.5-4B is worse than the fitted
+  encoder on toxicity (0.708), so nothing was escalated to it.
+
+So the practical shape is: a model writes the program, it is validated
+and its cutoffs are fitted on a labelled sample, and only then is it
+trusted. Regex facts carry structured text such as logs. On free text,
+one well-fitted question beats an elaborate decomposition. A program
+should not be deployed on the model's say-so: on this data the fit and
+the held-out score are what separated 0.733 from 0.905.
+
+Timing was taken with other benches sharing the machine, so it is
+indicative only.

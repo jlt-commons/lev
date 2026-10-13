@@ -13,6 +13,7 @@
     lev.clef-test
     lev.tinydecide-test
     lev.patterns-test
+    lev.program-test
     lev.calibrate-test
     workflows.email-test
     workflows.presets-test

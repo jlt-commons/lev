@@ -1,0 +1,13 @@
+{"labels": ["toxic", "ok"],
+ "extract": {"insult_words": "(?i)\\b(idiot\\w*|i-diot|stupid\\w*|moron\\w*|dumb\\w*|fools?|foolish|clowns?|trolls?|liars?|hypocrit\\w*|pathetic|ignorant|ignorance|imbecile\\w*|rubbish|garbage|trash|losers?|scum\\w*|gullible|incompetent|flakes?|lunatic\\w*|nuts?|crazy|insane|sick|disgusting|vile|silliness|nonsense|bigot\\w*|racists?|sexist|whiners?|sheep|cowards?)\\b",
+             "profanity": "(?i)(\\bf+u+c+k\\w*|\\bsh[i1]t\\w*|\\bcrap\\w*|\\bdamn\\w*|\\bhell\\b|\\bass(es|hole\\w*)?\\b|\\bbutt\\b|\\bbitch\\w*|\\bbastard\\w*|\\bpiss\\w*|\\bb\\.\\.\\.s|\\bfreaking\\b)",
+             "violence_words": "(?i)\\b(kill\\w*|die|dead|shoot\\w*|bombs?|wipe \\w+ out|rot in|hang\\w*|trigger|violent)\\b"},
+ "questions": {"toxic": {"type": "noul", "instructions": "Is this comment toxic: rude, disrespectful or unreasonable enough to make someone leave a discussion?"},
+               "insult": {"type": "noul", "instructions": "Does the comment insult, mock or call names at a person or a group?"},
+               "identity": {"type": "noul", "instructions": "Does the comment demean people for their race, religion, gender, sexuality, nationality or politics?"},
+               "threat": {"type": "noul", "instructions": "Does the comment threaten or wish violence or death on someone?"},
+               "obscene": {"type": "noul", "instructions": "Does the comment use profanity or obscene language, even partly censored?"}},
+ "rules": [{"when": {"any": [{"noul": "toxic", ">=": 0.5}, {"noul": "insult", ">=": 0.5}, {"noul": "identity", ">=": 0.5},
+                             {"noul": "threat", ">=": 0.5}, {"noul": "obscene", ">=": 0.5}]}, "then": "toxic"},
+           {"when": {"any": [{"fact": "insult_words"}, {"fact": "profanity"}, {"fact": "violence_words"}]}, "then": "toxic"}],
+ "default": "ok"}
