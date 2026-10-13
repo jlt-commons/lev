@@ -1,0 +1,5 @@
+{"labels": ["toxic", "ok"],
+ "questions": {"toxic": {"type": "noul",
+                         "instructions": "Is this comment toxic: rude, disrespectful or unreasonable enough to make someone leave a discussion?"}},
+ "rules": [{"when": {"noul": "toxic", ">=": 0.5}, "then": "toxic"}],
+ "default": "ok"}

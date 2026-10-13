@@ -23,6 +23,11 @@
                               \"embeddings\" [[unit vector] ...] \"dimensions\" \"usage\"
                               \"routing\"}: the encoder's mean-pooled final states
                               (lev.agent/embed; bench/README.md, embeddings)
+    POST /v1/program          {\"program\" (lev.program), \"state\"} or {.. \"states\" [...]},
+                              \"model\"? \"lang\"? -> {\"label\" \"rule\" \"facts\" (\"answers\"
+                              \"model\" \"usage\" when the model was asked)}, or
+                              {\"results\" [...]} for states: a classifier written
+                              as data (regex facts, questions, ordered rules)
     POST /v1/route            same body, questions optional -> the routing
                               decision alone, nothing loaded or run
     POST /v1/patterns/confidence-gate   systemone body + \"threshold\"? -> {\"automatic\" \"escalate\" \"response\"}
@@ -83,6 +88,7 @@
             [lev.llm]
             [lev.mcp :as mcp]
             [lev.patterns :as pat]
+            [lev.program :as prog]
             [lev.router :as router]
             [lev.sequence :as seq]
             [lev.tokenizer :as tk]
@@ -362,6 +368,29 @@
         (json-response 200 (update out "embeddings"
                                    (fn [es] (mapv (fn [e] (mapv #(/ (Math/round (* 1e6 (double %))) 1e6) e)) es))))))))
 
+(defn run-program
+  "POST /v1/program: {\"program\" {...}} and {\"state\"} or {\"states\"
+  [...]} (1-256), routed like /v1/systemone -> lev.program/run's map, or
+  {\"results\" [...]} in order for states. A bad program is a 422 at
+  [\"body\" \"program.<path>\"]."
+  [rt lock body]
+  (let [details (if-not (map? body)
+                  [(detail ["body"] "request body must be a JSON object" "type_error")]
+                  (vec (concat (when-not (map? (get body "program"))
+                                 [(detail ["body" "program"] "program is required: an object (lev.program)" "value_error")])
+                               (if (contains? body "states") (check-states body) (check-state body))
+                               (check-routing-fields rt body))))]
+    (if (seq details)
+      (unprocessable details)
+      (let [p (try (prog/validate (get body "program"))
+                   (catch Exception e
+                     (throw (ex-info (ex-message e) (update (ex-data e) :field #(str "program." %))))))
+            {:keys [model lang]} (routing-opts body)
+            one (fn [x] (prog/run rt x p {:model model :lang lang}))]
+        (json-response 200 (if (contains? body "states")
+                             {"results" (locking lock (mapv one (get body "states")))}
+                             (locking lock (one (get body "state")))))))))
+
 (defn route-only
   "POST /v1/route: the decision for a body, without loading or running."
   [rt body]
@@ -542,6 +571,8 @@
                :response (guard (json-in #(systemone-batch rt lock %) false))}
               {:path "/v1/embed" :method :post
                :response (guard (json-in #(embed rt lock %) false))}
+              {:path "/v1/program" :method :post
+               :response (guard (json-in #(run-program rt lock %) false))}
               {:path "/v1/route" :method :post
                :response (guard (json-in #(route-only rt %) false))}
               {:path "/v1/models" :method :get :response (guard (fn [_] (models rt)))}

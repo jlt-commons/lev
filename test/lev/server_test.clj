@@ -525,6 +525,40 @@
       (is (= ["body" "model"] (loc (second (post {"state" "a" "model" "nope"})))))
       (is (= 405 (first (call h (req :get "/v1/embed"))))))))
 
+(deftest programs-on-the-wire
+  (let [rt (router/preloaded @agent "english" {})
+        h (srv/handler rt {:workflows @workflows})
+        post (fn [body] (call h (req :post "/v1/program" :body (seq/json-str body))))
+        loc (fn [b] (get-in b ["detail" 0 "loc"]))
+        p {"extract" {"oom" "(?i)oom-killed|out of memory"}
+           "questions" {"refund" {"type" "noul" "instructions" "Does the customer ask for money back?"}}
+           "rules" [{"when" {"fact" "oom"} "then" "incident"}
+                    {"when" {"noul" "refund" ">=" 0.5} "then" "refund"}]
+           "default" "other"}]
+    (testing "a fact decides without the model"
+      (let [[st b] (post {"program" p "state" "pods OOM-killed on payments"})]
+        (is (= 200 st) (pr-str b))
+        (is (= ["label" "rule" "facts"] (keys b)))
+        (is (= "incident" (get b "label")))))
+    (testing "otherwise the encoder answers the questions the rules read"
+      (let [[st b] (post {"program" p "state" "I was charged twice, please refund the duplicate charge"})]
+        (is (= 200 st))
+        (is (= "refund" (get b "label")))
+        (is (= "english" (get b "model")))))
+    (testing "several states"
+      (let [[st b] (post {"program" p "states" ["out of memory again" "hello there"]})]
+        (is (= 200 st))
+        (is (= ["incident" 0] ((juxt #(get % "label") #(get % "rule")) (first (get b "results")))))
+        (is (= 2 (count (get b "results"))))))
+    (testing "validation"
+      (is (= ["body" "program"] (loc (second (post {"state" "a"})))))
+      (is (= ["body" "state"] (loc (second (post {"program" p})))))
+      (is (= ["body" "program.rules[0].when"]
+             (loc (second (post {"program" (assoc-in p ["rules" 0 "when"] {"fact" "nope"}) "state" "a"})))))
+      (is (= ["body" "program.extract.oom"]
+             (loc (second (post {"program" (assoc-in p ["extract" "oom"] "(") "state" "a"})))))
+      (is (= 405 (first (call h (req :get "/v1/program"))))))))
+
 (deftest an-engine-thinker-is-listed-as-not-thinking
   ;; Clef and TinyDecide generate nothing: there is no thought to switch on
   (let [rt (router/make-router {:thinkers {"clef" {:engine "clef" :model "target/no-such.gguf" :head "target/nope"}

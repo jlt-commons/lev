@@ -1,0 +1,106 @@
+{
+ "labels": [
+  "normal",
+  "KERNDTLB",
+  "KERNSTOR",
+  "KERNMNTF",
+  "KERNTERM",
+  "KERNRTSP",
+  "KERNREC",
+  "APPSEV",
+  "APPRES",
+  "APPTO",
+  "APPREAD",
+  "APPCHILD",
+  "APPOUT"
+ ],
+ "extract": {
+  "dtlb": "data TLB error interrupt",
+  "dstor": "data storage interrupt",
+  "mount": "Lustre mount FAILED",
+  "term": "rts: kernel terminated",
+  "panic": "rts panic",
+  "tree": "Error receiving packet on tree network",
+  "severed": "ciod: Error reading message prefix.*Link has been severed",
+  "reset": "ciod: Error reading message prefix.*Connection reset by peer",
+  "timeout": "ciod: Error reading message prefix.*Connection timed out",
+  "prefix": "ciod: failed to read message prefix on control stream",
+  "child": "ciod: Error creating node map.*No child processes",
+  "chdir": "ciod: LOGIN chdir.*failed: Input/output error"
+ },
+ "rules": [
+  {
+   "when": {
+    "fact": "dtlb"
+   },
+   "then": "KERNDTLB"
+  },
+  {
+   "when": {
+    "fact": "dstor"
+   },
+   "then": "KERNSTOR"
+  },
+  {
+   "when": {
+    "fact": "mount"
+   },
+   "then": "KERNMNTF"
+  },
+  {
+   "when": {
+    "fact": "term"
+   },
+   "then": "KERNTERM"
+  },
+  {
+   "when": {
+    "fact": "panic"
+   },
+   "then": "KERNRTSP"
+  },
+  {
+   "when": {
+    "fact": "tree"
+   },
+   "then": "KERNREC"
+  },
+  {
+   "when": {
+    "fact": "severed"
+   },
+   "then": "APPSEV"
+  },
+  {
+   "when": {
+    "fact": "reset"
+   },
+   "then": "APPRES"
+  },
+  {
+   "when": {
+    "fact": "timeout"
+   },
+   "then": "APPTO"
+  },
+  {
+   "when": {
+    "fact": "prefix"
+   },
+   "then": "APPREAD"
+  },
+  {
+   "when": {
+    "fact": "child"
+   },
+   "then": "APPCHILD"
+  },
+  {
+   "when": {
+    "fact": "chdir"
+   },
+   "then": "APPOUT"
+  }
+ ],
+ "default": "normal"
+}

@@ -1,0 +1,125 @@
+{
+ "labels": [
+  "normal",
+  "KERNDTLB",
+  "KERNSTOR",
+  "KERNMNTF",
+  "KERNTERM",
+  "KERNRTSP",
+  "KERNREC",
+  "APPSEV",
+  "APPRES",
+  "APPTO",
+  "APPREAD",
+  "APPCHILD",
+  "APPOUT"
+ ],
+ "questions": {
+  "category": {
+   "type": "choice",
+   "instructions": "Which alert category does this Blue Gene/L RAS log line belong to?",
+   "criteria": {
+    "normal": "routine or corrected event, no alert: core dumps being generated, alignment exceptions, corrected cache parity or ddr errors, interrupt statistics, register dumps",
+    "KERNDTLB": "kernel data TLB error interrupt",
+    "KERNSTOR": "kernel data storage interrupt",
+    "KERNMNTF": "Lustre file system mount failed on an I/O node",
+    "KERNTERM": "rts: the compute kernel terminated",
+    "KERNRTSP": "rts panic, execution stopped",
+    "KERNREC": "error receiving a packet on the tree network",
+    "APPSEV": "ciod: the CioStream socket link has been severed",
+    "APPRES": "ciod: the CioStream socket connection was reset by peer",
+    "APPTO": "ciod: the CioStream socket connection timed out",
+    "APPREAD": "ciod: failed to read the message prefix on the control stream",
+    "APPCHILD": "ciod: error creating the node map, no child processes",
+    "APPOUT": "ciod: login chdir failed with an input/output error"
+   }
+  }
+ },
+ "rules": [
+  {
+   "when": {
+    "choice": "category",
+    "is": "KERNDTLB"
+   },
+   "then": "KERNDTLB"
+  },
+  {
+   "when": {
+    "choice": "category",
+    "is": "KERNSTOR"
+   },
+   "then": "KERNSTOR"
+  },
+  {
+   "when": {
+    "choice": "category",
+    "is": "KERNMNTF"
+   },
+   "then": "KERNMNTF"
+  },
+  {
+   "when": {
+    "choice": "category",
+    "is": "KERNTERM"
+   },
+   "then": "KERNTERM"
+  },
+  {
+   "when": {
+    "choice": "category",
+    "is": "KERNRTSP"
+   },
+   "then": "KERNRTSP"
+  },
+  {
+   "when": {
+    "choice": "category",
+    "is": "KERNREC"
+   },
+   "then": "KERNREC"
+  },
+  {
+   "when": {
+    "choice": "category",
+    "is": "APPSEV"
+   },
+   "then": "APPSEV"
+  },
+  {
+   "when": {
+    "choice": "category",
+    "is": "APPRES"
+   },
+   "then": "APPRES"
+  },
+  {
+   "when": {
+    "choice": "category",
+    "is": "APPTO"
+   },
+   "then": "APPTO"
+  },
+  {
+   "when": {
+    "choice": "category",
+    "is": "APPREAD"
+   },
+   "then": "APPREAD"
+  },
+  {
+   "when": {
+    "choice": "category",
+    "is": "APPCHILD"
+   },
+   "then": "APPCHILD"
+  },
+  {
+   "when": {
+    "choice": "category",
+    "is": "APPOUT"
+   },
+   "then": "APPOUT"
+  }
+ ],
+ "default": "normal"
+}
