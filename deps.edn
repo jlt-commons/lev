@@ -125,7 +125,9 @@
              (shell "git" "-C" dir "checkout" "--quiet" "FETCH_HEAD"))
            (when-not (fs/exists? (str dir "/build/common/libllama-common.a"))
              (apply shell "cmake" "-S" dir "-B" (str dir "/build") "-DCMAKE_BUILD_TYPE=Release"
-                    "-DBUILD_SHARED_LIBS=OFF" "-DGGML_OPENMP=OFF" "-DGGML_NATIVE=OFF" "-DGGML_CPU_ALL_VARIANTS=OFF"
+                    ;; position-independent: jolt build links the archives into a
+                    ;; shared object, which GNU ld refuses non-PIC code for
+                    "-DBUILD_SHARED_LIBS=OFF" "-DCMAKE_POSITION_INDEPENDENT_CODE=ON" "-DGGML_OPENMP=OFF" "-DGGML_NATIVE=OFF" "-DGGML_CPU_ALL_VARIANTS=OFF"
                     "-DLLAMA_BUILD_TESTS=OFF" "-DLLAMA_BUILD_EXAMPLES=OFF" "-DLLAMA_BUILD_TOOLS=OFF"
                     "-DLLAMA_BUILD_SERVER=OFF" "-DLLAMA_BUILD_APP=OFF" "-DLLAMA_CURL=OFF"
                     ;; llama-common (the decision engine's tokenizer and batch
@@ -173,9 +175,13 @@
                   "python" "bench/clef_golden.py" dir "golden/clef"))}
 
   binary
-  {:doc "build the standalone HTTP server ./lev-server (kernels and llama.cpp linked in, mlx too when native/liblev_mlx.a is built) and self-test it against golden/"
+  {:doc "build the standalone HTTP server ./lev-server (kernels and llama.cpp linked in; mlx when `jolt mlx` built it, else an empty archive stands in) and self-test it against golden/"
    :depends [kernels llama]
-   :task (do (shell "jolt" "build" "-m" "lev.server" "-o" "lev-server")
+   :task (do ;; jolt build links every :static archive, optional or not: without
+             ;; `jolt mlx` an empty one stands in, and lev.mlx/available? is false
+             (when-not (fs/exists? "native/liblev_mlx.a")
+               (spit "native/liblev_mlx.a" "!<arch>\n"))
+             (shell "jolt" "build" "-m" "lev.server" "-o" "lev-server")
              ;; the suite runs interpreted; the AOT build must prove itself
              (shell "./lev-server" "--self-test" "--data" "data" "--golden" "golden")
              (println "built: ./lev-server  (run: ./lev-server --data data --port 8080)"))}
