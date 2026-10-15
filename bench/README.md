@@ -704,3 +704,34 @@ the held-out score are what separated 0.733 from 0.905.
 
 Timing was taken with other benches sharing the machine, so it is
 indicative only.
+
+## Official llama.cpp, the decision engine vendored (2026-10-15)
+
+The parallel-decision fork changed nothing in libllama: its decision
+engine runs on the stock API (`llama_memory_seq_cp`, `seq_rm`,
+`llama_decode`, `llama_get_logits_ith`). The engine is now vendored in
+`native/decision-engine.{h,cpp}` and built against official llama.cpp
+b11630, 589 commits past the fork's base. Only the class lev drives is
+kept, and the two `common/` batch helpers upstream dropped are local.
+
+Same machine, back to back: upstream, the fork's library, upstream again.
+The workflow rows use Qwen3.5-4B Q8 in Jev mode (thinking off), p50 over
+20 iterations. The authored144 rows use MiniCPM5-2B Q8, thinking off.
+
+| | upstream b11630 | fork | upstream b11630 again |
+|---|---|---|---|
+| 4 questions, short state | 689 ms | 746 ms | 653 ms |
+| 4 questions, long state (1.6k tokens) | 3,165 ms | 3,561 ms | 3,439 ms |
+| 1 question, long state | 2,786 ms | 3,010 ms | 2,923 ms |
+| 8 short states, one call each | 5,218 ms | 6,134 ms | 5,234 ms |
+| 8 short states, one batch | 5,260 ms | 5,403 ms | 4,672 ms |
+| authored144 (MiniCPM5) | 108/144, ECE 0.174, 116 ms | 108/144, ECE 0.174, 125 ms | 108/144, ECE 0.174, 112 ms |
+
+The answers do not move: authored144 is the same 108 cases with the same
+calibration, and llm-test, think-test and clef-test pass against their
+goldens. Upstream is 3–15% faster on every row.
+
+Qwen3.5-4B pays more per call than MiniCPM5 did in the Jev-mode section.
+It is a hybrid model with recurrent layers, and llama.cpp splits its
+batches by sequence, so its branches take several passes, not one. On a
+long state the prefill dominates either way.
