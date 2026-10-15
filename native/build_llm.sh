@@ -31,7 +31,7 @@ case "$(uname -s)" in
     # :static {:lib ...} entries can express
     sdk=$(xcrun --show-sdk-path)
     mkdir -p native/frameworks
-    for f in Metal Foundation MetalKit Accelerate; do
+    for f in Metal Foundation MetalKit Accelerate QuartzCore; do
       ln -sf "$sdk/System/Library/Frameworks/$f.framework/$f.tbd" "native/frameworks/lib$f.tbd"
     done
     ;;
