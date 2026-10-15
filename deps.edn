@@ -25,8 +25,11 @@
  ;; blas: Accelerate framework on mac, OpenBLAS elsewhere.
  ;; `jolt build` links the kernels statically from the archive so the binary
  ;; is self-contained; run/repl/test load the shared object. By platform, so
- ;; a Windows build of a program that uses lev as a library links none.
+ ;; a Windows build of a program that uses lev as a library links none, and
+ ;; optional, so that program's binary still starts there, without them:
+ ;; lev.tensors/available? says whether they loaded.
  :jolt/native [{:name "lev_kernels"
+                :optional true
                 :darwin ["native/liblev_kernels.dylib"]
                 :linux  ["native/liblev_kernels.so"]
                 :static {:darwin {:archive "native/liblev_kernels.a"}
