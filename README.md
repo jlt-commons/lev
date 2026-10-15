@@ -777,6 +777,10 @@ request for a model that is not available gets a `503` saying so.
 Add this repo as a `:git/url` dep, run `jolt kernels` and `jolt prepare`
 for the native library and `data/`, then:
 
+jolt runs no prep step for a dependency, so `jolt kernels` runs in lev's
+own checkout, the gitlib that `jolt path` names. A Windows build of the
+program links no kernels, so the encoders are unavailable there.
+
 ```clojure
 (require '[lev.agent :as ag] '[lev.server :as server] '[lev.config :as cfg])
 (def agent (ag/load-agent (cfg/setting (cfg/context {}) "--data" "LEV_DATA" :data "data")))
@@ -1008,7 +1012,10 @@ entries, and the build task branches on OS.
 - **HTTP**: `jolt-lang/ring-chez-adapter` serves the API, and
   `org.clojars.askonomm/ruuter` from Clojars dispatches its routes.
 - **BLAS**: `cblas_sgemm` from the Accelerate framework on mac, OpenBLAS
-  on linux.
+  on linux, else the reference `libblas.so.3` (about 10x slower). It is an
+  optional native, so a program that uses lev as a library still starts
+  without one; the encoders then refuse to load, and
+  `lev.tensors/available?` says whether they can.
 
 On linux, install the OpenBLAS runtime package.
 
