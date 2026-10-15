@@ -2,8 +2,8 @@
   "The two tokenizers in the checkpoint bundle, faithful to their tokenizer.json:
 
   :byte-level (english, typed-decisions) - GPT-2 byte-level BPE: NFC
-  normalize (ICU unorm2 via FFI), GPT-2 pre-tokenization (hand-written
-  scanner with exact \\p{L}/\\p{N} classes via ICU u_charType, since the
+  normalize, GPT-2 pre-tokenization (hand-written scanner with exact
+  \\p{L}/\\p{N} classes from the Unicode categories, since the
   pattern needs lookahead that irregex lacks), byte-to-unicode mapping, and
   lowest-rank-first BPE merges.
 
@@ -17,147 +17,53 @@
   (input_ids from the real transformers fast tokenizers) and the scanner by
   the ByteLevel pre-tokenizer boundaries in golden/cases.edn."
   (:require [clojure.edn :as edn]
-            [clojure.string :as str]
-            [jolt.ffi :as ffi]))
+            [clojure.string :as str]))
 
-;; --- ICU: NFC + character classes ---------------------------------------------
+;; --- Unicode: normalization + character classes ------------------------------
+;; From the runtime's own tables (jolt: Chez's, the same Unicode data the
+;; JVM's Character and Normalizer read), so no ICU is loaded and every host
+;; answers alike, whatever ICU it has. They track a newer Unicode than an
+;; older ICU: the code points they differ on are the ones assigned since.
 
-(defmacro ^:private deficu
-  "defcfn for an ICU symbol. mac's libicucore exports plain names; linux ICU
-  builds append the major version (u_charType_76), so resolve the first name
-  that exists at expansion time. Extend the version list if your ICU is newer."
-  [name csym argtypes rettype]
-  (let [candidates (cons csym (map #(str csym "_" %) (range 90 59 -1)))
-        found (some #(when (ffi/find-symbol %) %) candidates)]
-    (when-not found
-      (throw (ex-info (str "ICU symbol not found: " csym
-                           " (is libicuuc / libicucore declared in :jolt/native?)")
-                      {:symbol csym})))
-    `(def ~name (ffi/foreign-fn ~found ~argtypes ~rettype))))
-
-;; takes UErrorCode* and reads it before doing anything: passing nothing
-;; "worked" on mac by luck and segfaulted on linux
-(deficu unorm2-get-instance* "unorm2_getNFCInstance" [:pointer] :pointer)
-(deficu unorm2-normalize* "unorm2_normalize"
-  [:pointer :pointer :int32 :pointer :int32 :pointer] :int32)
-(deficu unorm2-get-nfd-instance* "unorm2_getNFDInstance" [:pointer] :pointer)
-(deficu u-str-to-lower* "u_strToLower"
-  [:pointer :int32 :pointer :int32 :pointer :pointer] :int32)
-(deficu u-char-type* "u_charType" [:int32] :int32)
-;; White_Space property == regex \\s. NOT u_isspace, which also admits the
-;; U+001C..U+001F separators that the GPT-2 pattern treats as ordinary chars.
-(deficu u-is-uwhitespace* "u_isUWhiteSpace" [:int32] :int8)
-
-(defn- normalizer [get-instance what]
-  (delay (with-open [a (ffi/confined-arena)]
-           (let [err (ffi/alloc a 4)]
-             (ffi/write err :int32 0 0)
-             (let [p (get-instance err)
-                   code (ffi/read err :int32 0)]
-               (when (pos? code)
-                 (throw (ex-info (str what " failed") {:code code})))
-               p)))))
-
-(def nfc-instance (normalizer unorm2-get-instance* "unorm2_getNFCInstance"))
-(def nfd-instance (normalizer unorm2-get-nfd-instance* "unorm2_getNFDInstance"))
-
-(def ^:private U_BUFFER_OVERFLOW_ERROR 15)
-
-(defn utf8->u16
-  "Codepoint string -> vector of UTF-16 code units."
-  [s]
-  (loop [chs (seq s) out (transient [])]
-    (if (empty? chs)
-      (persistent! out)
-      (let [cp (long (first chs))]
-        (if (< cp 0x10000)
-          (recur (next chs) (conj! out cp))
-          (let [v (- cp 0x10000)]
-            (recur (next chs)
-                   (-> out
-                       (conj! (bit-or 0xD800 (bit-shift-right v 10)))
-                       (conj! (bit-or 0xDC00 (bit-and v 0x3FF)))))))))))
-
-(defn u16->string
-  "Vector of UTF-16 code units -> codepoint string (jolt strings are
-  codepoint-indexed, so surrogates collapse to single chars)."
-  [units]
-  (let [cps (loop [us (seq units) out ()]
-              (if (empty? us)
-                (reverse out)
-                (let [u (first us)]
-                  (if (and (>= u 0xD800) (< u 0xDC00)
-                           (seq (rest us))
-                           (>= (second us) 0xDC00) (< (second us) 0xE000))
-                    (recur (rest (rest us))
-                           (conj out (+ 0x10000
-                                        (bit-shift-left (bit-and (- u 0xD800) 0x3FF) 10)
-                                        (bit-and (- (second us) 0xDC00) 0x3FF))))
-                    (recur (rest us) (conj out u))))))]
-    (apply str (map char cps))))
-
-(defn- icu-transform
-  "s through an ICU UTF-16 transform (f src n dst cap err) -> length,
-  retried once with the length ICU reports on overflow, so no input fails
-  on buffer size."
-  [s f what]
-  (let [units (utf8->u16 s)
-        n (count units)
-        run (fn [cap]
-              (with-open [a (ffi/confined-arena)]
-                (let [src (ffi/alloc a (* 2 (max n 1)))
-                      dst (ffi/alloc a (* 2 cap))
-                      err (ffi/alloc a 4)]
-                  (dotimes [i n]
-                    (ffi/write src :uint16 (bit-and 0xFFFF (nth units i)) (* 2 i)))
-                  ;; ICU returns early on a pre-set error code
-                  (ffi/write err :int32 0 0)
-                  (let [ret (f a src (int n) dst (int cap) err)
-                        code (ffi/read err :int32 0)]
-                    (cond
-                      (zero? code) (u16->string (mapv #(ffi/read dst :uint16 (* 2 %)) (range ret)))
-                      (= code U_BUFFER_OVERFLOW_ERROR) [:retry ret]
-                      :else (throw (ex-info (str what " failed") {:code code})))))))
-        r (run (+ (* 3 n) 16))]
-    (if (vector? r) (run (inc (second r))) r)))
+(defn- ascii? [s] (every? #(< (long %) 128) s))
 
 (defn nfd
-  "NFD-normalize via ICU. ASCII-only input is identity (fast path)."
+  "NFD-normalize. ASCII-only input is identity (fast path)."
   [s]
-  (if (every? #(< (long %) 128) s)
-    s
-    (icu-transform s (fn [_ src n dst cap err] (unorm2-normalize* @nfd-instance src n dst cap err))
-                   "unorm2_normalize")))
+  (if (ascii? s) s (java.text.Normalizer/normalize s java.text.Normalizer$Form/NFD)))
 
 (defn lower
   "Full Unicode lowercase in the root locale (JavaScript's toLowerCase:
   İ is i + U+0307, never a Turkish dotless i)."
   [s]
-  (if (every? #(< (long %) 128) s)
-    (str/lower-case s)
-    (icu-transform s (fn [a src n dst cap err] (u-str-to-lower* dst cap src n (ffi/string->ptr a "") err))
-                   "u_strToLower")))
+  (str/lower-case s))
 
 (defn char-type
   "ICU's UCharCategory of a code point (1 Lu .. 6 Mn, 12 Zs, 15 Cc, 16 Cf,
-  19..23 and 28..29 the punctuation)."
+  19..23 and 28..29 the punctuation). The JVM's Character.getType numbers
+  them alike but skips 17, so its private use (18) to final punctuation
+  (30) are ICU's 17 to 29."
   [c]
-  (u-char-type* (int c)))
+  (let [t (Character/getType (int c))]
+    (if (> t 17) (dec t) t)))
 
 (defn nfc
-  "NFC-normalize via ICU. ASCII-only input is identity (fast path). NFC
-  can grow a string (composition exclusions decompose without
-  recomposing), by at most 3x: icu-transform starts there."
+  "NFC-normalize. ASCII-only input is identity (fast path)."
   [s]
-  (if (every? #(< (long %) 128) s)
-    s
-    (icu-transform s (fn [_ src n dst cap err] (unorm2-normalize* @nfc-instance src n dst cap err))
-                   "unorm2_normalize")))
+  (if (ascii? s) s (java.text.Normalizer/normalize s java.text.Normalizer$Form/NFC)))
+
+(def ^:private white-space
+  "The White_Space property (PropList.txt), regex \\s: unchanged since
+  Unicode 6.3. Not Character/isWhitespace, which leaves out the no-break
+  spaces and takes the U+001C..U+001F separators the GPT-2 pattern treats
+  as ordinary chars."
+  (into #{0x20 0x85 0xA0 0x1680 0x2028 0x2029 0x202F 0x205F 0x3000}
+        (concat (range 0x09 0x0E) (range 0x2000 0x200B))))
 
 ;; \\p{L} = UCharType 1..5; \\p{N} = 9..11 (Nd, Nl, No)
-(defn letter? [c] (let [t (u-char-type* (int c))] (and (>= t 1) (<= t 5))))
-(defn number? [c] (let [t (u-char-type* (int c))] (and (>= t 9) (<= t 11))))
-(defn space? [c] (not (zero? (u-is-uwhitespace* (int c)))))
+(defn letter? [c] (let [t (char-type c)] (and (>= t 1) (<= t 5))))
+(defn number? [c] (let [t (char-type c)] (and (>= t 9) (<= t 11))))
+(defn space? [c] (contains? white-space (long c)))
 
 ;; --- byte-level BPE -----------------------------------------------------------
 
