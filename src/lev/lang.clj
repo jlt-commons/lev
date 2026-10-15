@@ -9,8 +9,8 @@
   primary signal; whether Latin text is English is a best-effort
   stopword/diacritic guess. Pass an explicit model or lang when you know.
 
-  Python's str.isalpha / \\w classes come from ICU u_charType, as in the
-  tokenizer."
+  Python's str.isalpha / \\w classes come from the Unicode categories,
+  as in the tokenizer (lev.tokenizer/char-type)."
   (:require [clojure.string :as str]
             [lev.sequence :as seq]
             [lev.tokenizer :as tk]))
@@ -76,7 +76,7 @@
   "The class [^\\W\\d_] of Python's re: \\w (isalnum or _) minus decimal
   digits (Nd) minus underscore, i.e. letters plus Nl/No numerics."
   [c]
-  (let [t (tk/u-char-type* (int c))]
+  (let [t (tk/char-type c)]
     (or (and (>= t 1) (<= t 5)) (= t 10) (= t 11))))
 
 (defn- words

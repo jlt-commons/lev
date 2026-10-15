@@ -21,8 +21,6 @@
                                      :git/sha "ff99a9d42761482851e40876c880ac4443cc4d96"}}
 
  ;; kernels: built from native/lev_kernels.c by the `kernels` task.
- ;; icu: NFC for the tokenizer. mac ships libicucore in the shared cache;
- ;; linux distros name it libicuuc.so.<ver>.
  ;; blas: Accelerate framework on mac, OpenBLAS elsewhere.
  ;; `jolt build` links the kernels statically from the archive so the binary
  ;; is self-contained; run/repl/test load the shared object.
@@ -76,10 +74,6 @@
                 :darwin ["/System/Library/Frameworks/MetalKit.framework/MetalKit"]
                 :linux []
                 :static {:darwin {:lib "MetalKit" :libdir "native/frameworks"}}}
-               {:name "icu"
-                :darwin ["libicucore.dylib"]
-                :linux  ["libicuuc.so.76" "libicuuc.so.75" "libicuuc.so.74"
-                         "libicuuc.so.72" "libicuuc.so.71" "libicuuc.so"]}
                ;; on mac the static llm archive (ggml-cpu) also needs Accelerate
                ;; at link time, through its stub like the frameworks above
                {:name "blas"

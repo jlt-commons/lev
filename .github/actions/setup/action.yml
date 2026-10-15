@@ -24,18 +24,16 @@ inputs:
 runs:
   using: composite
   steps:
-    # The tokenizer dlopens ICU and the matmul dlopens OpenBLAS at runtime
-    # (see :jolt/native in deps.edn). macOS has both in the system: libicucore
-    # and the Accelerate framework. The -dev packages also install the
-    # unversioned .so symlinks, which are the last fallback in deps.edn, so
-    # this keeps working when ubuntu-latest moves to a newer ICU. uuid-dev is
-    # for `jolt build`: the Chez launcher links -luuid on linux.
+    # The matmul dlopens OpenBLAS at runtime (see :jolt/native in
+    # deps.edn); macOS has the Accelerate framework. The -dev package also
+    # installs the unversioned .so symlink, the last fallback in deps.edn.
+    # uuid-dev is for `jolt build`: the Chez launcher links -luuid on linux.
     - name: System deps (Linux)
       if: runner.os == 'Linux'
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y --no-install-recommends libicu-dev libopenblas-dev uuid-dev
+        sudo apt-get install -y --no-install-recommends libopenblas-dev uuid-dev
 
     # Latest release by default; the JOLT_PIN repository variable overrides
     # without a commit. Echoed so the log records which compiler built what.

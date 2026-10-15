@@ -865,8 +865,8 @@ The binary still needs the prepared data root next to it, or `--data
 DIR`, or `config.edn`. It loads the workflow files from source at
 startup, so they need no rebuild, from `./workflows` relative to where it
 runs, `--workflows`, `LEV_WORKFLOWS` or `config.edn`, plus
-`~/.config/lev/workflows`. From the OS it needs ICU and BLAS, and
-libssl and libcrypto for the adapter.
+`~/.config/lev/workflows`. From the OS it needs BLAS, and libssl and
+libcrypto for the adapter.
 
 ```
 ./lev-server --data data --workflows workflows --port 8080 --api-key s3cret
@@ -997,11 +997,10 @@ entries, and the build task branches on OS.
   static link adds the QuartzCore framework to llama's set, and the
   binary needs `mlx.metallib` (the precompiled Metal kernels, 100 MB)
   beside it at runtime.
-- **ICU**: `libicucore.dylib` on mac, whose system dylib leaves the
-  symbols unguarded, and `libicuuc.so.<ver>` on linux. The tokenizers
-  call `unorm2` for NFC and the `u_charType` / `u_isUWhiteSpace`
-  classifiers. Linux ICU builds append the major version to every symbol, like `u_charType_76`, and the bindings resolve the first spelling that exists, for versions
-  60 to 90.
+- **Unicode**: the tokenizers' NFC and NFD, lowercasing and character
+  classes come from jolt's own Unicode tables (`java.text.Normalizer`,
+  `Character/getType`), so no ICU is loaded and every host answers
+  alike.
 - **JSON**: `org.clojure/data.json` from Maven, plus `jolt-lang/time`,
   which provides the `java.time` classes data.json needs to load. Only
   `prepare` uses them. Requests are read by `lev.json`, which keeps key
@@ -1011,9 +1010,7 @@ entries, and the build task branches on OS.
 - **BLAS**: `cblas_sgemm` from the Accelerate framework on mac, OpenBLAS
   on linux.
 
-On linux, install the ICU and OpenBLAS runtime packages. Adjust the
-version suffixes in `deps.edn` if your distro's `libicuuc.so` version is
-not listed.
+On linux, install the OpenBLAS runtime package.
 
 ## Status
 

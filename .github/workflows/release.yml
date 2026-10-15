@@ -89,7 +89,7 @@ jobs:
 
           The binary does not carry the weights. Download the \`convaiinnovations/laya\` checkpoints you want (README, Getting the checkpoints) and convert them once with \`jolt prepare\`, then run \`./lev-server --data data --port 8080 --workflows workflows\`. \`./lev-server --self-test --data data --golden golden\` checks the pair. Requests route between the english, multilingual and typed-decisions checkpoints like the Python package's Router; unprepared ones answer 503.
 
-          Runtime deps on Linux: ICU and OpenBLAS (\`apt install libicu-dev libopenblas-dev\`, or the runtime packages for your release). macOS uses the system ICU and Accelerate.
+          Runtime deps on Linux: OpenBLAS (\`apt install libopenblas-dev\`, or the runtime package for your release). macOS uses Accelerate.
           The macOS binary is unsigned; clear the quarantine flag before first run: \`xattr -d com.apple.quarantine ./lev-server\`." \
             || echo "release already exists, uploading asset"
           gh release upload "${GITHUB_REF_NAME}" "${PKG}" --clobber
