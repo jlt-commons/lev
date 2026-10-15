@@ -14,11 +14,12 @@
         askonomm/ruuter {:git/url "https://git.nmm.ee/asko/ruuter.git"
                         :git/tag "v2.1.1"
                         :git/sha "263f868cf19e73ccda7cda6b4d4af1d8fe504749"}
-        io.github.jolt-lang/time {:git/url "https://github.com/jolt-lang/time.git"
-                                  :git/sha "abeee49974c2c4efa2fa75c96d9a379822c6815f"}
+        jolt-lang/time {:git/url "https://github.com/jolt-lang/time"
+                        :git/tag "v0.0.11"
+                        :git/sha "2c58d9c709a25d80608757c3026f4c656a994ef1"}
         jolt-lang/ring-chez-adapter {:git/url "https://github.com/jolt-lang/ring-chez-adapter"
-                                     :git/tag "v0.7.7"
-                                     :git/sha "ff99a9d42761482851e40876c880ac4443cc4d96"}}
+                                     :git/tag "v0.7.14"
+                                     :git/sha "d29d8add671f66e4223567fb60e53a975ecce23e"}}
 
  ;; kernels: built from native/lev_kernels.c by the `kernels` task.
  ;; blas: Accelerate framework on mac, OpenBLAS elsewhere.
