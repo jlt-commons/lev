@@ -2,18 +2,20 @@
   "jolt prepare must reproduce the reference Python conversion byte for
   byte: golden/prepare.edn pins the size and zlib CRC-32 of every
   file the Python converter wrote for this checkpoint. Needs the checkpoint
-  (LEV_CHECKPOINTS, default ../laya); writes to target/prepare-test and removes it."
+  (LEV_CHECKPOINTS, config.edn :checkpoints-home, else ../laya); writes to target/prepare-test and removes it."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [lev.config :as cfg]
             [lev.prepare :as prep]))
 
 (def golden-dir
   (or (System/getenv "LEV_GOLDEN") "golden"))
 
 (def home
-  (or (System/getenv "LEV_CHECKPOINTS") "../laya"))
+  "Where jolt prepare looks: LEV_CHECKPOINTS, config.edn :checkpoints-home, ../laya."
+  (cfg/setting (cfg/context {}) "--checkpoints" "LEV_CHECKPOINTS" :checkpoints-home "../laya"))
 
 (deftest jolt-prepare-reproduces-python-conversion
   (is (.exists (io/file home "model.safetensors"))
