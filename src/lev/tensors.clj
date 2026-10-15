@@ -75,6 +75,12 @@
   (set-threads* (int (max 1 n)))
   n)
 
+(defn available?
+  "Are the kernels and a BLAS loaded? Both are declared natives, BLAS an
+  optional one: without them nothing here runs."
+  []
+  (boolean (and (ffi/find-symbol "lev_set_threads") (ffi/find-symbol "cblas_sgemm"))))
+
 (def ^:private sgemm-address
   "cblas_sgemm as the kernel library reaches it: the same BLAS entry the
   binding above calls, found once through the declared natives."
