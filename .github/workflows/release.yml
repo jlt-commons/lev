@@ -56,8 +56,8 @@ jobs:
       - name: Test multilingual
         run: LEV_TEST_CHECKPOINTS=multilingual jolt -M:test lev.checkpoints-test
 
-      # jolt binary first runs the llama task: llama.cpp (thecodacus's
-      # parallel-decision fork) is fetched at its pinned commit and built static (cmake; Metal on mac, CPU elsewhere), so
+      # jolt binary first runs the llama task: llama.cpp is fetched at its
+      # pinned release and built static (cmake; Metal on mac, CPU elsewhere), so
       # the binary carries the thinker
       - name: Build and self-test the binary
         run: jolt binary
