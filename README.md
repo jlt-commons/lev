@@ -144,7 +144,7 @@ models' templates use. Another model family needs its own template, which lives 
 
 ```
 jolt kernels             # compile native/lev_kernels.c
-jolt llama               # fetch + build llama.cpp (the parallel-decision fork, pinned commit) into native/liblev_llm.*, the thinker's native
+jolt llama               # fetch + build llama.cpp (pinned release) with the vendored decision engine into native/liblev_llm.*, the thinker's native
 jolt mlx                 # mac: clone + build mlx-c (pinned tag) into native/liblev_mlx.*, the encoders' GPU backend
 jolt prepare             # every checkpoint under ../laya -> data/, data/typed-decisions, ...
 jolt -M:test             # parity suites vs golden/
@@ -333,8 +333,10 @@ a 503.
 ### Jev mode
 
 With thinking off, a thinker answers every question of a call in one
-pass. `native/llama.cpp` is [thecodacus/llama.cpp's](https://github.com/thecodacus/llama.cpp/tree/parallel-decision) `parallel-decision`
-branch, and its decision engine does the work. The chat up to the state
+pass. The decision engine of [thecodacus/llama.cpp's](https://github.com/thecodacus/llama.cpp/tree/parallel-decision)
+`parallel-decision` branch does the work. It is vendored in
+`native/decision-engine.{h,cpp}` and built against official llama.cpp
+until upstream takes it ([#29752](https://github.com/ggml-org/llama.cpp/pull/29752)). The chat up to the state
 is decoded once and kept for later calls. The state is decoded once per
 call. Each question is then a branch forked from the state in the KV
 cache, and every branch is decoded in the same batch. Each branch holds
@@ -967,13 +969,13 @@ entries, and the build task branches on OS.
   `LEV_THREADS`. Attention calls `cblas_sgemm` through a pointer the
   Clojure side hands it, so the library links against no BLAS.
 - **llama.cpp**: `native/liblev_llm.dylib` / `.so` plus `liblev_llm.a`,
-  built by `jolt llama`. It fetches thecodacus/llama.cpp's
-  `parallel-decision` branch at its pinned commit (upstream b10435 plus
-  the decision engine) into `native/llama.cpp` and builds `llama` and
+  built by `jolt llama`. It fetches official llama.cpp at its pinned
+  release into `native/llama.cpp` and builds `llama` and
   `llama-common` static with cmake, with no https or subprocess support,
   Metal with the shader library embedded on mac and CPU elsewhere. They
-  sit behind `native/lev_llm.c` and `native/lev_decision.cpp` (the
-  engine's C face), which jolt.ffi binds as `lev.llm`. A checkout at
+  sit behind `native/lev_llm.c` and `native/lev_decision.cpp` (the C
+  face of the decision engine vendored in `native/decision-engine.cpp`),
+  which jolt.ffi binds as `lev.llm`. A checkout at
   another commit is replaced. `LLAMA_CPP_SRC=path` fetches from a local
   clone that has the commit. It is
   optional, since without it the encoders run and thinkers are

@@ -109,14 +109,15 @@
                (println "built:" kern-lib kern-archive)))}
 
   llama
-  {:doc "fetch llama.cpp at the pinned commit of thecodacus/llama.cpp's parallel-decision branch (upstream b10435+617 plus its decision engine) into native/llama.cpp, build it static, wrap it and the engine in native/liblev_llm.* (the thinker's native; LLAMA_CPP_SRC=path fetches from a local checkout holding that commit)"
-   :task (let [rev "14d04e755fa28653e87b9a07072892265bdc0fad"
-               src (or (System/getenv "LLAMA_CPP_SRC") "https://github.com/thecodacus/llama.cpp")
+  {:doc "fetch llama.cpp at the pinned release into native/llama.cpp, build it static, wrap it and the decision engine (native/decision-engine.cpp, vendored until llama.cpp takes it) in native/liblev_llm.* (the thinker's native; LLAMA_CPP_SRC=path fetches from a local checkout holding that commit)"
+   :task (let [release "b11630"
+               rev "6868a52cb337450658006ad2f9281c2eb63f1666"
+               src (or (System/getenv "LLAMA_CPP_SRC") "https://github.com/ggml-org/llama.cpp")
                dir "native/llama.cpp"
                head (str dir "/.git/HEAD")
                lib (str "native/liblev_llm." (if mac? "dylib" "so"))]
-           ;; a checkout of any other commit (the upstream tag this used to
-           ;; pin) is replaced, build and all
+           ;; a checkout of any other commit (the parallel-decision fork this
+           ;; used to pin) is replaced, build and all
            (when-not (and (fs/exists? head) (= rev (.trim (slurp head))))
              (fs/delete-tree dir)
              (fs/create-dirs dir)
@@ -139,9 +140,9 @@
              (shell "cmake" "--build" (str dir "/build") "--target" "llama" "llama-common"
                     "--parallel" (str (.availableProcessors (Runtime/getRuntime)))))
            (if (and (fs/exists? lib) (fs/exists? "native/liblev_llm.a")
-                    (empty? (fs/modified-since lib ["native/lev_llm.c" "native/lev_llm.h" "native/lev_decision.cpp" "native/lev_clef.cpp" "native/build_llm.sh" head])))
+                    (empty? (fs/modified-since lib ["native/lev_llm.c" "native/lev_llm.h" "native/lev_decision.cpp" "native/decision-engine.cpp" "native/decision-engine.h" "native/lev_clef.cpp" "native/build_llm.sh" head])))
              (println "llm: up to date -" lib "native/liblev_llm.a")
-             (shell "sh" "native/build_llm.sh" rev)))}
+             (shell "sh" "native/build_llm.sh" release)))}
 
   mlx
   {:doc "clone mlx-c at the pinned tag into native/mlx-c (it fetches mlx itself), build both static, wrap them in native/liblev_mlx.* with the Metal kernels beside it (the encoders' optional GPU backend, mac only; MLX_C_SRC=path clones from a local checkout)"

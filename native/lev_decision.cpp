@@ -1,6 +1,6 @@
-/* lev_decision.cpp — Jev mode: the decision engine of thecodacus/llama.cpp's
- * parallel-decision branch (tools/parallel-decision/decision-engine.cpp)
- * behind one flat C entry point for jolt.ffi.
+/* lev_decision.cpp — Jev mode: the decision engine (native/decision-engine.cpp,
+ * vendored from thecodacus/llama.cpp's parallel-decision branch) behind one
+ * flat C entry point for jolt.ffi.
  *
  * A call answers a set of fields for one or more contexts in one pass: the
  * shared text (the part of the prompt every call repeats) is decoded once

@@ -1,16 +1,15 @@
 #!/bin/sh
 # Build native/lev_llm.c and native/lev_decision.cpp (with the decision
-# engine of the vendored fork, tools/parallel-decision) against llama.cpp
-# (native/llama.cpp, fetched by the `jolt llama` task at the pinned commit)
+# engine vendored in native/decision-engine.cpp) against llama.cpp
+# (native/llama.cpp, fetched by the `jolt llama` task at the pinned release)
 # into liblev_llm.{dylib,so} for jolt run/test and liblev_llm.a for jolt
-# build. Run from the project root; $1 is the commit, for lev_llm_version.
+# build. Run from the project root; $1 is the release tag, for lev_llm_version.
 set -e
 L=native/llama.cpp
-REV=${1:-$(cd "$L" && git rev-parse HEAD 2>/dev/null || echo unknown)}
-TAG="thecodacus/parallel-decision@$(echo "$REV" | cut -c1-9)"
+TAG="${1:-$(cd "$L" && git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 LIBS="$L/build/common/libllama-common.a $L/build/common/libllama-common-base.a $L/build/vendor/cpp-httplib/libcpp-httplib.a
       $L/build/src/libllama.a $L/build/ggml/src/libggml.a $L/build/ggml/src/libggml-cpu.a $L/build/ggml/src/libggml-base.a"
-INC="-I$L/include -I$L/ggml/include -I$L/common -I$L/vendor -I$L/tools/parallel-decision -Inative"
+INC="-I$L/include -I$L/ggml/include -I$L/common -I$L/vendor -Inative"
 CFLAGS="-O2 -std=c11 -Wall -Wextra -DLEV_LLAMA_BUILD=\"$TAG\" $INC"
 CXXFLAGS="-O2 -std=c++17 -Wall $INC"
 # lev_clef.cpp reads hidden states through the staging header in src/
@@ -23,7 +22,7 @@ case "$(uname -s)" in
     cc $CFLAGS -c native/lev_llm.c -o native/lev_llm.o
     c++ $CXXFLAGS -c native/lev_decision.cpp -o native/lev_decision.o
     c++ $CXXFLAGS $CLEF_INC -c native/lev_clef.cpp -o native/lev_clef.o
-    c++ $CXXFLAGS -w -c $L/tools/parallel-decision/decision-engine.cpp -o native/decision-engine.o
+    c++ $CXXFLAGS -c native/decision-engine.cpp -o native/decision-engine.o
     c++ -dynamiclib $OBJS $LIBS $FRAMEWORKS -o native/liblev_llm.dylib
     # one archive with every llama.cpp member inside, for jolt build's force-load
     libtool -static -o native/liblev_llm.a $OBJS $LIBS
@@ -39,7 +38,7 @@ case "$(uname -s)" in
     cc $CFLAGS -fPIC -c native/lev_llm.c -o native/lev_llm.o
     c++ $CXXFLAGS -fPIC -c native/lev_decision.cpp -o native/lev_decision.o
     c++ $CXXFLAGS $CLEF_INC -fPIC -c native/lev_clef.cpp -o native/lev_clef.o
-    c++ $CXXFLAGS -w -fPIC -c $L/tools/parallel-decision/decision-engine.cpp -o native/decision-engine.o
+    c++ $CXXFLAGS -fPIC -c native/decision-engine.cpp -o native/decision-engine.o
     c++ -shared $OBJS -Wl,--whole-archive $LIBS -Wl,--no-whole-archive -lm -lpthread -o native/liblev_llm.so
     printf 'create native/liblev_llm.a\n' > native/llm.mri
     for o in $OBJS; do printf 'addmod %s\n' "$o" >> native/llm.mri; done
