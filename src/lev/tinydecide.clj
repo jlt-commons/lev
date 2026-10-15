@@ -75,6 +75,8 @@
   [dir]
   (when-not (release? dir)
     (unavailable dir (str dir " has no meta.json and model.bin (hf download TheREZOR/TinyDecide)")))
+  (when-not (t/available?)
+    (unavailable dir "no kernels or BLAS loaded (jolt kernels; OpenBLAS on linux)"))
   (let [meta (json/read-str (slurp (str dir "/meta.json")))
         cfg (get meta "cfg")
         tok (get meta "tokenizer")]

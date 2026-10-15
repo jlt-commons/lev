@@ -23,11 +23,13 @@
  ;; kernels: built from native/lev_kernels.c by the `kernels` task.
  ;; blas: Accelerate framework on mac, OpenBLAS elsewhere.
  ;; `jolt build` links the kernels statically from the archive so the binary
- ;; is self-contained; run/repl/test load the shared object.
+ ;; is self-contained; run/repl/test load the shared object. By platform, so
+ ;; a Windows build of a program that uses lev as a library links none.
  :jolt/native [{:name "lev_kernels"
                 :darwin ["native/liblev_kernels.dylib"]
                 :linux  ["native/liblev_kernels.so"]
-                :static {:archive "native/liblev_kernels.a"}}
+                :static {:darwin {:archive "native/liblev_kernels.a"}
+                         :linux {:archive "native/liblev_kernels.a"}}}
                ;; llama.cpp behind native/lev_llm.c, built by `jolt llama`
                ;; (optional at runtime: without it only the thinker is missing)
                {:name "lev_llm"
@@ -75,10 +77,16 @@
                 :linux []
                 :static {:darwin {:lib "MetalKit" :libdir "native/frameworks"}}}
                ;; on mac the static llm archive (ggml-cpu) also needs Accelerate
-               ;; at link time, through its stub like the frameworks above
+               ;; at link time, through its stub like the frameworks above.
+               ;; Optional, so a program that uses lev as a library starts on a
+               ;; host without it; the encoders then refuse to load
+               ;; (lev.tensors/available?). On linux libblas.so.3 is the
+               ;; fallback: the reference CBLAS, ~10x slower than OpenBLAS, or
+               ;; OpenBLAS itself where the alternatives point it there.
                {:name "blas"
+                :optional true
                 :darwin ["/System/Library/Frameworks/Accelerate.framework/Accelerate"]
-                :linux  ["libopenblas.so.0" "libopenblas.so"]
+                :linux  ["libopenblas.so.0" "libopenblas.so" "libblas.so.3"]
                 :static {:darwin {:lib "Accelerate" :libdir "native/frameworks"}}}]
 
  :tasks
