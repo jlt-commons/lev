@@ -278,37 +278,52 @@
   [agent]
   (if (#{:thinker :clef :tinydecide} (:kind agent)) [:cfg :calibration] [:cfg]))
 
+(defn- overlay
+  "Temperatures `m` over `base`: its per-type ones replace, its buckets
+  merge."
+  [base m]
+  (cond-> (assoc base :temperature (vec (or (:temperature m) (:temperature base))))
+    (or (:temperature-by-options base) (:temperature-by-options m))
+    (assoc :temperature-by-options (merge (:temperature-by-options base) (:temperature-by-options m)))))
+
 (defn mode-calibration
   "A thinker calibration's temperatures for one mode (:thinking or :direct):
   the mode's own map over the flat temperatures, bucket by bucket; the
   flat ones when the mode has none. Thinking and answering directly are
   different readouts and want different temperatures (Callosum measured
   T 1.91 direct and 3.17 after a 1024-token thought on its models), so
-  `lev.calibrate` fits each mode on its own."
-  [cal mode]
-  (let [flat (dissoc cal :thinking :direct)]
-    (if-let [m (get cal mode)]
-      (cond-> (assoc flat :temperature (vec (or (:temperature m) (:temperature flat))))
-        (or (:temperature-by-options flat) (:temperature-by-options m))
-        (assoc :temperature-by-options (merge (:temperature-by-options flat) (:temperature-by-options m))))
-      flat)))
+  `lev.calibrate` fits each mode on its own. With a budget, the mode's
+  :by-budget entry for the largest calibrated budget at or below it goes
+  over that (a thought's temperature moves with its length)."
+  ([cal mode] (mode-calibration cal mode nil))
+  ([cal mode budget]
+   (let [flat (dissoc cal :thinking :direct)
+         m (get cal mode)
+         at (when (and budget m)
+              (some->> (keys (:by-budget m)) (filter #(<= % budget)) seq (reduce max)))]
+     (cond-> flat
+       m (overlay m)
+       at (overlay (get-in m [:by-budget at]))))))
 
 (defn calibration-of
   "The agent's {:temperature [per type] :temperature-by-options {bucket T}};
   with a mode, a thinker's for that mode (mode-calibration)."
   ([agent] (get-in agent (calibration-path agent)))
-  ([agent mode] (mode-calibration (calibration-of agent) mode)))
+  ([agent mode] (mode-calibration (calibration-of agent) mode))
+  ([agent mode budget] (mode-calibration (calibration-of agent) mode budget)))
 
 (defn with-calibration
   "The agent with refitted temperatures (lev.calibrate's {:temperature
   [per type] :temperature-by-options {bucket T}}, a thinker's possibly
-  under :thinking / :direct) over its own, bucket by bucket."
+  under :thinking / :direct, the thinking ones per budget under
+  :by-budget) over its own, bucket by bucket, budget by budget."
   [agent cal]
   (let [path (calibration-path agent)
-        apply-at (fn [agent at {:keys [temperature temperature-by-options]}]
+        apply-at (fn [agent at {:keys [temperature temperature-by-options by-budget]}]
                    (cond-> agent
                      temperature (assoc-in (conj at :temperature) (vec temperature))
-                     temperature-by-options (update-in (conj at :temperature-by-options) merge temperature-by-options)))]
+                     temperature-by-options (update-in (conj at :temperature-by-options) merge temperature-by-options)
+                     by-budget (update-in (conj at :by-budget) merge by-budget)))]
     (reduce (fn [agent mode]
               (if-let [m (get cal mode)] (apply-at agent (conj path mode) m) agent))
             (apply-at agent path cal)

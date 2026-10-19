@@ -34,7 +34,8 @@
 (ffi/defcfn jev* "lev_llm_jev"
   [:pointer :pointer :pointer :int :pointer :pointer :pointer :int :int :int :pointer :pointer :pointer] :int :blocking)
 (ffi/defcfn decide* "lev_llm_decide"
-  [:pointer :pointer :int :pointer :pointer :pointer :int :pointer :float :float :float :uint32 :pointer :pointer :int]
+  [:pointer :pointer :int :pointer :pointer :pointer :int :pointer :float :float :float :uint32
+   :double :double :pointer :int :pointer :pointer :pointer :int]
   :int :blocking)
 
 (defn available?
@@ -148,21 +149,39 @@
           (throw (ex-info (str "generation failed: " (error* (:p m))) {:type :llm-error})))
         {:text (ffi/ptr->string out) :tokens n}))))
 
+(def closes
+  "lev_llm_decide's close codes: how a thought ended."
+  {-1 nil 0 :natural 1 :budget 2 :eos 3 :deadline})
+
 (defn decide
   "Score `options` as answers to `prompt` (a chat-prompt): {:think-max
   (tokens of thought; 0 = none, the prompt must then close the thought)
-  :think-end :answer-prefix :answer-end :temperature :top-p :min-p :seed}
-  -> {:logp [per option] :thought text :tokens thought-tokens}."
-  [m prompt options {:keys [think-max think-end answer-prefix answer-end temperature top-p min-p seed]}]
+  :think-end :answer-prefix :answer-end :temperature :top-p :min-p :seed
+  :deadline-ms (wall time for the whole call: the thought is closed once
+  it minus :reserve-ms, the readout's expected time, has passed) :cuts
+  (ascending thought lengths below :think-max at which the answer is also
+  read, the thought closed there on a copy of the state: every smaller
+  budget's answer from one generation)}
+  -> {:logp [per option] :thought text :tokens thought-tokens :close
+  (:natural :budget :eos :deadline, nil without a thought) :prefill-ms
+  :think-ms :read-ms :cuts [{:at k :logp [..] :think-ms :read-ms} ...]}; a
+  cut the thought closed before reads the final answer (:think-ms nil)."
+  [m prompt options {:keys [think-max think-end answer-prefix answer-end temperature top-p min-p seed
+                            deadline-ms reserve-ms cuts]}]
   (let [opts (:opts m)
         n (count options)
+        cuts (vec cuts)
+        nc (count cuts)
         think-max (long (or think-max (:think-max opts)))
         think-cap (* 8 (+ think-max 64))]
     (ffi/with-arena [a]
       (let [optv (ffi/alloc a (* 8 n))
             strs (mapv (fn [o] (ffi/string->ptr a (str o))) options)
             _ (dotimes [i n] (ffi/write optv :pointer (nth strs i) (* 8 i)))
-            logp (ffi/alloc a (* 8 n))
+            cutv (ffi/alloc a (* 4 (max 1 nc)))
+            _ (dotimes [i nc] (ffi/write cutv :int (int (nth cuts i)) (* 4 i)))
+            logp (ffi/alloc a (* 8 n (inc nc)))
+            stats (ffi/alloc a (* 8 (+ 4 (* 2 nc))))
             thought (ffi/alloc a think-cap)
             made (decide* (:p m) (ffi/string->ptr a prompt) (int think-max)
                           (ffi/string->ptr a (or think-end (:think-end opts)))
@@ -171,12 +190,21 @@
                           (ffi/string->ptr a (or answer-end (:answer-end opts)))
                           (double (or temperature (:temperature opts))) (double (or top-p (:top-p opts)))
                           (double (or min-p (:min-p opts))) (long (or seed (:seed opts)))
-                          logp thought (int think-cap))]
+                          (double (or deadline-ms 0.0)) (double (or reserve-ms 0.0)) cutv (int nc)
+                          logp stats thought (int think-cap))]
         (when (neg? made)
           (throw (ex-info (str "decide failed: " (error* (:p m))) {:type :llm-error})))
-        {:logp (mapv #(ffi/read logp :double (* 8 %)) (range n))
-         :thought (ffi/ptr->string thought)
-         :tokens made}))))
+        (let [row (fn [r] (mapv #(ffi/read logp :double (* 8 (+ (* r n) %))) (range n)))
+              stat #(ffi/read stats :double (* 8 %))
+              unset #(when-not (neg? %) %)]
+          {:logp (row nc)
+           :thought (ffi/ptr->string thought)
+           :tokens made
+           :close (closes (long (stat 0)))
+           :prefill-ms (stat 1) :think-ms (stat 2) :read-ms (stat 3)
+           :cuts (mapv (fn [i] {:at (nth cuts i) :logp (row i)
+                                :think-ms (unset (stat (+ 4 i))) :read-ms (unset (stat (+ 4 nc i)))})
+                       (range nc))})))))
 
 (defn jev
   "Jev mode (the decision engine of the vendored llama.cpp fork): every

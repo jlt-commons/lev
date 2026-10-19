@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "lev_llm.h"
 
@@ -356,95 +357,64 @@ static void log_softmax_into(const float *logits, int n, float *out) {
     for (int i = 0; i < n; i++) out[i] = logits[i] - m - lz;
 }
 
-/* The thinker's one call per question.
- *
- *   prompt        the chat prompt through the assistant turn: either ending
- *                 with the model's open-thought tag (think_max > 0) or with
- *                 the closed empty thought (think_max = 0)
- *   think_max     tokens of thought allowed; the thought ends at think_end
- *                 or end-of-generation, and if it runs out think_end is
- *                 forced so the model still answers
- *   think_end     e.g. "</think>"
- *   answer_prefix text forced after the thought, e.g. "\n\nANSWER: "
- *   options       the candidate answers, each scored as its tokens followed
- *                 by answer_end (e.g. "<|im_end|>"), so an option that is a
- *                 prefix of another is not favoured
- *   logp          out, n_options log probabilities of the options given
- *                 everything before them (unnormalised over options)
- *   thought       out, the text of the thought (may be NULL)
- *
- * Answers the number of thought tokens, or -1 (see lev_llm_error). */
-int lev_llm_decide(struct lev_llm *h, const char *prompt, int think_max, const char *think_end,
-                   const char *answer_prefix, const char **options, int n_options, const char *answer_end,
-                   float temperature, float top_p, float min_p, unsigned seed,
-                   double *logp, char *thought, int thought_cap) {
-    if (!lev_llm_ok(h)) return -1;
-    if (n_options < 1 || n_options + 1 > h->n_seq_max) {
-        set_error(h, "%d options, but the context holds %d sequences (n_seq_max)", n_options, h->n_seq_max);
+static double now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6;
+}
+
+/* Sample a token from a saved logits vector, as llama_sampler_sample does
+ * from the context's: the thought keeps its own last logits so a probe on
+ * another sequence can overwrite the context's in between. */
+static llama_token sample_logits(struct llama_sampler *s, const float *logits, llama_token_data *cand, int n_vocab) {
+    for (int i = 0; i < n_vocab; i++) {
+        cand[i].id = i;
+        cand[i].logit = logits[i];
+        cand[i].p = 0.0f;
+    }
+    llama_token_data_array arr = {cand, (size_t)n_vocab, -1, false};
+    llama_sampler_apply(s, &arr);
+    return arr.data[arr.selected].id;
+}
+
+/* decode `text` (special tokens parsed) into `seq` at *pos, which advances.
+ * Answers how many tokens were decoded (0 for empty text) or -1. */
+static int decode_text(struct lev_llm *h, const char *text, int seq, int *pos) {
+    if (!text || !*text) return 0;
+    llama_token *t;
+    int n = tokenize(h, text, 0, 1, &t);
+    if (n < 0 || decode_tokens(h, t, n, seq, *pos, 1) < 0) {
+        if (n >= 0) free(t);
         return -1;
     }
-    lev_jev_forget(h);
+    *pos += n;
+    free(t);
+    return n;
+}
+
+/* The answer read off sequence `src` at `pos`: think_end when `close`,
+ * then the answer prefix, then every option's tokens (+ answer_end), each
+ * on its own copy of `src` (sequences 1..n_options), in one batch.
+ * `last` holds the raw logits of src's last token, used when nothing is
+ * decoded here. Writes n_options log probabilities; answers 0 or -1. */
+static int readout(struct lev_llm *h, int src, int pos, int close, const char *think_end, const char *answer_prefix,
+                   const char **options, int n_options, const char *answer_end, const float *last, double *logp) {
     llama_memory_t mem = llama_get_memory(h->ctx);
-    llama_memory_clear(mem, 0);
-    if (thought && thought_cap > 0) thought[0] = 0;
-
-    llama_token *toks;
-    int n = tokenize(h, prompt, 1, 1, &toks);
-    if (n < 0) {
-        set_error(h, "cannot tokenize the prompt");
-        return -1;
+    int decoded = 0, d;
+    if (close) {
+        if ((d = decode_text(h, think_end, src, &pos)) < 0) return -1;
+        decoded += d;
     }
-    if (n + think_max + 64 > h->n_ctx) {
-        free(toks);
-        set_error(h, "prompt of %d tokens + %d of thought exceed the context of %d", n, think_max, h->n_ctx);
-        return -1;
-    }
-    int rc = decode_tokens(h, toks, n, 0, 0, 1);
-    free(toks);
-    if (rc < 0) return -1;
-    int pos = n;
-
-    /* the thought */
-    int made = 0;
-    if (think_max > 0) {
-        int len = 0, stopped = 0;
-        struct llama_sampler *s = make_sampler(temperature, top_p, min_p, seed);
-        made = sample_until(h, s, think_max, think_end, &pos, thought, thought_cap, &len, &stopped);
-        llama_sampler_free(s);
-        if (made < 0) return -1;
-        if (!stopped || !ends_with(thought ? thought : "", len, think_end)) {
-            /* out of budget (or stopped on EOG mid-thought): close it ourselves */
-            llama_token *et;
-            int ne = tokenize(h, think_end, 0, 1, &et);
-            if (ne < 0 || decode_tokens(h, et, ne, 0, pos, 1) < 0) {
-                free(et);
-                return -1;
-            }
-            pos += ne;
-            free(et);
-        }
-    }
-
-    /* the forced answer prefix */
-    if (answer_prefix && *answer_prefix) {
-        llama_token *pt;
-        int np = tokenize(h, answer_prefix, 0, 1, &pt);
-        if (np < 0 || decode_tokens(h, pt, np, 0, pos, 1) < 0) {
-            free(pt);
-            return -1;
-        }
-        pos += np;
-        free(pt);
-    }
+    if ((d = decode_text(h, answer_prefix, src, &pos)) < 0) return -1;
+    decoded += d;
 
     /* the distribution over the first answer token, before the options overwrite the logits */
     float *first = malloc(sizeof(float) * (size_t)h->n_vocab);
-    log_softmax_into(llama_get_logits_ith(h->ctx, -1), h->n_vocab, first);
+    log_softmax_into(decoded ? llama_get_logits_ith(h->ctx, -1) : last, h->n_vocab, first);
 
-    /* every option's tokens (+ answer_end), each on its own copy of the state, in one batch */
     llama_token **ot = calloc((size_t)n_options, sizeof *ot);
     int *on = calloc((size_t)n_options, sizeof *on);
-    int total = 0;
+    int total = 0, rc = 0;
     size_t endlen = answer_end ? strlen(answer_end) : 0;
     for (int i = 0; i < n_options; i++) {
         size_t olen = strlen(options[i]);
@@ -458,12 +428,11 @@ int lev_llm_decide(struct lev_llm *h, const char *prompt, int think_max, const c
             set_error(h, "cannot tokenize option %d", i);
             rc = -1;
         }
-        total += on[i];
-        llama_memory_seq_cp(mem, 0, i + 1, -1, -1);
+        total += on[i] > 0 ? on[i] : 0;
+        llama_memory_seq_cp(mem, src, i + 1, -1, -1);
     }
     float *scratch = malloc(sizeof(float) * (size_t)h->n_vocab);
     if (rc == 0) {
-        if (pos + total > h->n_ctx * n_options) rc = -1; /* cannot happen: each option has its own sequence */
         struct llama_batch b = llama_batch_init(total, 0, 1);
         int k = 0;
         for (int i = 0; i < n_options; i++)
@@ -504,5 +473,149 @@ int lev_llm_decide(struct lev_llm *h, const char *prompt, int think_max, const c
     free(on);
     free(first);
     free(scratch);
+    return rc;
+}
+
+/* The thinker's one call per question.
+ *
+ *   prompt        the chat prompt through the assistant turn: either ending
+ *                 with the model's open-thought tag (think_max > 0) or with
+ *                 the closed empty thought (think_max = 0)
+ *   think_max     tokens of thought allowed; the thought ends at think_end
+ *                 or end-of-generation, and if it runs out think_end is
+ *                 forced so the model still answers
+ *   think_end     e.g. "</think>"
+ *   answer_prefix text forced after the thought, e.g. "\n\nANSWER: "
+ *   options       the candidate answers, each scored as its tokens followed
+ *                 by answer_end (e.g. "<|im_end|>"), so an option that is a
+ *                 prefix of another is not favoured
+ *   deadline_ms   0, or the wall time this call may take (from entry): the
+ *                 thought is closed once deadline_ms - reserve_ms has passed,
+ *                 reserve_ms being what the readout is expected to need
+ *   cuts          n_cuts ascending thought lengths (0 < cut < think_max) at
+ *                 which the answer is also read, on a copy of the state with
+ *                 the thought closed there, before the thought goes on: what
+ *                 every smaller budget would have answered, from one
+ *                 generation (exact under greedy decoding)
+ *   logp          out, (n_cuts + 1) x n_options log probabilities of the
+ *                 options given everything before them (unnormalised over
+ *                 options): one row per cut, then the final answer's; a cut
+ *                 the thought closed before reads the final answer
+ *   stats         out (may be NULL), 4 + 2 n_cuts: how the thought closed
+ *                 (-1 none, 0 its own tag, 1 think_max, 2 end-of-generation,
+ *                 3 the deadline), prefill ms, thought ms, final readout ms,
+ *                 then per cut the thought ms when it was reached and its
+ *                 readout ms (-1 for a cut the thought closed before)
+ *   thought       out, the text of the thought (may be NULL)
+ *
+ * Answers the number of thought tokens, or -1 (see lev_llm_error). */
+int lev_llm_decide(struct lev_llm *h, const char *prompt, int think_max, const char *think_end,
+                   const char *answer_prefix, const char **options, int n_options, const char *answer_end,
+                   float temperature, float top_p, float min_p, unsigned seed,
+                   double deadline_ms, double reserve_ms, const int *cuts, int n_cuts,
+                   double *logp, double *stats, char *thought, int thought_cap) {
+    if (!lev_llm_ok(h)) return -1;
+    int probe = n_options + 1; /* a cut's readout state */
+    if (n_options < 1 || n_options + 1 + (n_cuts > 0) > h->n_seq_max) {
+        set_error(h, "%d options%s, but the context holds %d sequences (n_seq_max)", n_options,
+                  n_cuts > 0 ? " and a cut's state" : "", h->n_seq_max);
+        return -1;
+    }
+    for (int c = 0; c < n_cuts; c++)
+        if (cuts[c] <= 0 || cuts[c] >= think_max || (c > 0 && cuts[c] <= cuts[c - 1])) {
+            set_error(h, "cuts must ascend strictly within (0, think_max = %d)", think_max);
+            return -1;
+        }
+    double t0 = now_ms();
+    lev_jev_forget(h);
+    llama_memory_t mem = llama_get_memory(h->ctx);
+    llama_memory_clear(mem, 0);
+    if (thought && thought_cap > 0) thought[0] = 0;
+    if (stats) {
+        stats[0] = -1;
+        for (int i = 1; i < 4 + 2 * n_cuts; i++) stats[i] = i < 4 ? 0 : -1;
+    }
+
+    llama_token *toks;
+    int n = tokenize(h, prompt, 1, 1, &toks);
+    if (n < 0) {
+        set_error(h, "cannot tokenize the prompt");
+        return -1;
+    }
+    if (n + think_max + 64 > h->n_ctx) {
+        free(toks);
+        set_error(h, "prompt of %d tokens + %d of thought exceed the context of %d", n, think_max, h->n_ctx);
+        return -1;
+    }
+    int rc = decode_tokens(h, toks, n, 0, 0, 1);
+    free(toks);
+    if (rc < 0) return -1;
+    int pos = n;
+    float *cur = malloc(sizeof(float) * (size_t)h->n_vocab);
+    memcpy(cur, llama_get_logits_ith(h->ctx, -1), sizeof(float) * (size_t)h->n_vocab);
+    double t_think = now_ms();
+    if (stats) stats[1] = t_think - t0;
+
+    /* the thought */
+    int made = 0, closed = -1, ci = 0;
+    if (think_max > 0) {
+        int len = 0;
+        llama_token_data *cand = malloc(sizeof *cand * (size_t)h->n_vocab);
+        struct llama_sampler *s = make_sampler(temperature, top_p, min_p, seed);
+        closed = 1;
+        while (made < think_max) {
+            if (ci < n_cuts && made == cuts[ci]) {
+                double tc = now_ms();
+                llama_memory_seq_cp(mem, 0, probe, -1, -1);
+                rc = readout(h, probe, pos, 1, think_end, answer_prefix, options, n_options, answer_end, cur,
+                             logp + (size_t)ci * (size_t)n_options);
+                llama_memory_seq_rm(mem, probe, -1, -1);
+                if (rc < 0) break;
+                if (stats) {
+                    stats[4 + ci] = tc - t_think;
+                    stats[4 + n_cuts + ci] = now_ms() - tc;
+                }
+                ci++;
+                continue;
+            }
+            if (deadline_ms > 0 && now_ms() - t0 >= deadline_ms - reserve_ms) {
+                closed = 3;
+                break;
+            }
+            llama_token tok = sample_logits(s, cur, cand, h->n_vocab);
+            if (llama_vocab_is_eog(h->vocab, tok)) {
+                closed = 2;
+                break;
+            }
+            llama_sampler_accept(s, tok);
+            if ((rc = decode_tokens(h, &tok, 1, 0, pos, 1)) < 0) break;
+            memcpy(cur, llama_get_logits_ith(h->ctx, -1), sizeof(float) * (size_t)h->n_vocab);
+            pos++;
+            made++;
+            append_piece(h, tok, thought, thought_cap, &len);
+            if (think_end && *think_end && ends_with(thought ? thought : "", len, think_end)) {
+                closed = 0;
+                break;
+            }
+        }
+        llama_sampler_free(s);
+        free(cand);
+    }
+    double t_read = now_ms();
+    if (stats) {
+        stats[0] = closed;
+        stats[2] = t_read - t_think;
+    }
+
+    /* the answer: out of budget, at the deadline or on EOG mid-thought, close it ourselves */
+    double *final = logp + (size_t)n_cuts * (size_t)n_options;
+    if (rc == 0)
+        rc = readout(h, 0, pos, think_max > 0 && closed != 0, think_end, answer_prefix, options, n_options,
+                     answer_end, cur, final);
+    if (stats) stats[3] = now_ms() - t_read;
+    /* the cuts the thought never reached read what the whole thought did */
+    for (; rc == 0 && ci < n_cuts; ci++)
+        memcpy(logp + (size_t)ci * (size_t)n_options, final, sizeof(double) * (size_t)n_options);
+    free(cur);
     return rc < 0 ? -1 : made;
 }

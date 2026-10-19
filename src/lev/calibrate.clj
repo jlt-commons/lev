@@ -24,7 +24,8 @@
   :temperature [per type]}; `evaluate` reports NLL, ECE and accuracy per
   bucket before and after.
 
-    jolt -M:calibrate --labels cases.jsonl --out calibration.edn [--data DIR] [--model NAME] [--all] [--thinking true|false]
+    jolt -M:calibrate --labels cases.jsonl --out calibration.edn [--data DIR] [--model NAME] [--all]
+                      [--thinking true|false | --budgets 0,128,256,512]
 
   and then config.edn :calibration {\"english\" \"calibration.edn\"} (or
   --calibration PATH) loads it over the checkpoint's own; a thinker's
@@ -39,7 +40,8 @@
             [lev.config :as cfg]
             [lev.json :as json]
             [lev.router :as router]
-            [lev.sequence :as seq])
+            [lev.sequence :as seq]
+            [lev.think :as think])
   (:gen-class))
 
 (defn softmax [xs]
@@ -72,30 +74,49 @@
             (= "false" label) 0
             :else (bad (str (pr-str label) " is not true or false"))))))
 
+(defn- case-items
+  "One item per labeled question of case `c`, from `answer` (state, the
+  asked questions -> rows {:qid :q :qtype :k :logits ...}); each item
+  keeps its row under :row."
+  [c answer]
+  (let [labels (qget c :labels)
+        targets (qget c :targets)
+        questions (qget c :questions)
+        asked (into (seq/ordered-map [])
+                    (filter (fn [[qid _]] (or (contains? labels qid) (contains? labels (key-str qid)))) questions))]
+    (when (seq asked)
+      (map (fn [{:keys [qid q qtype k logits] :as row}]
+             (let [label (if (contains? labels qid) (get labels qid) (get labels (key-str qid)))
+                   target (or (get targets qid) (get targets (key-str qid)))]
+               (when (and target (not= k (count target)))
+                 (throw (ex-info (str "target for " (pr-str qid) ": " (count target) " probabilities for " k " options")
+                                 {:type :invalid-label :qid qid})))
+               (cond-> {:bucket (seq/temp-bucket qtype k) :type (:t q) :qtype qtype :k k
+                        :logits logits :label (label-index qid q label) :row row}
+                 target (assoc :target (mapv double target)))))
+           (answer (qget c :state) asked)))))
+
 (defn collect
   "Run the model (lev.agent/forward: an encoder or a thinker) over the
   cases; one item per labeled question: {:bucket :type :qtype :k :logits
   :label}, plus :target with the case's gold distribution for it.
   Questions without a label are skipped."
   [agent cases]
-  (vec (mapcat (fn [c]
-                 (let [labels (qget c :labels)
-                       targets (qget c :targets)
-                       questions (qget c :questions)
-                       asked (into (seq/ordered-map [])
-                                   (filter (fn [[qid _]] (or (contains? labels qid) (contains? labels (key-str qid)))) questions))]
-                   (when (seq asked)
-                     (map (fn [{:keys [qid q qtype k logits]}]
-                            (let [label (if (contains? labels qid) (get labels qid) (get labels (key-str qid)))
-                                  target (or (get targets qid) (get targets (key-str qid)))]
-                              (when (and target (not= k (count target)))
-                                (throw (ex-info (str "target for " (pr-str qid) ": " (count target) " probabilities for " k " options")
-                                                {:type :invalid-label :qid qid})))
-                              (cond-> {:bucket (seq/temp-bucket qtype k) :type (:t q) :qtype qtype :k k
-                                       :logits logits :label (label-index qid q label)}
-                                target (assoc :target (mapv double target)))))
-                          (ag/forward agent (qget c :state) asked)))))
-               cases)))
+  (vec (mapcat (fn [c] (map #(dissoc % :row) (case-items c #(ag/forward agent %1 %2)))) cases)))
+
+(defn collect-sweep
+  "A thinker over the cases at every budget from one thought per question
+  (lev.think/sweep): {budget [item ...]}, the items as `collect`'s plus
+  the budget's :tokens and modelled :ms."
+  [agent cases budgets]
+  (let [items (vec (mapcat (fn [c] (case-items c #(think/sweep agent %1 %2 budgets))) cases))]
+    (into (sorted-map)
+          (map (fn [b]
+                 [b (mapv (fn [{:keys [row] :as item}]
+                            (let [{:keys [logits tokens ms]} (get-in row [:budgets b])]
+                              (-> item (dissoc :row) (assoc :logits logits :tokens tokens :ms ms))))
+                          items)]))
+          (distinct budgets))))
 
 (defn nll
   "Mean negative log likelihood of the labels under softmax(logits / t);
@@ -155,6 +176,17 @@
      :temperature (mapv (fn [qtype] (if-let [xs (get by-type qtype)] (fit-temperature xs) 1.0)) [0 1 2])
      :counts (into (sorted-map) (map (fn [[b xs]] [b (count xs)])) by-bucket)}))
 
+(defn sweep-calibration
+  "The fit of `collect-sweep`'s items: budget 0 under :direct, each
+  positive budget under :thinking :by-budget, the smallest of those also
+  the :thinking temperatures (what a budget below them all is read at)."
+  [by-budget]
+  (let [fit #(dissoc (calibration %) :counts)
+        thinking (into (sorted-map) (keep (fn [[b items]] (when (pos? b) [b (fit items)]))) by-budget)]
+    (cond-> {}
+      (contains? by-budget 0) (assoc :direct (fit (get by-budget 0)))
+      (seq thinking) (assoc :thinking (assoc (val (first thinking)) :by-budget thinking)))))
+
 (defn mode
   "The mode a thinker answers in when nothing asks otherwise (:thinking or
   :direct), which is the mode `collect` fits; nil for an encoder."
@@ -173,20 +205,25 @@
   [agent fitted]
   (if-let [m (mode agent)] {m fitted} fitted))
 
-(defn evaluate
-  "Per bucket: n, accuracy, and NLL / ECE under the agent's own
-  temperature (a thinker's for the mode it answers in) and under the
-  calibration's."
-  [agent items cal]
+(defn- evaluate* [items cal before-cal]
   (into (sorted-map)
         (map (fn [[b xs]]
                (let [{:keys [qtype k]} (first xs)
-                     before (ag/temperature-for (if-let [m (mode agent)] (ag/calibration-of agent m) (ag/calibration-of agent)) qtype k)
+                     before (ag/temperature-for before-cal qtype k)
                      after (get-in cal [:temperature-by-options b] before)]
                  [b {:n (count xs) :accuracy (accuracy xs)
                      :before {:t before :nll (nll xs before) :ece (ece xs before)}
                      :after {:t after :nll (nll xs after) :ece (ece xs after)}}]))
              (group-by :bucket items))))
+
+(defn evaluate
+  "Per bucket: n, accuracy, and NLL / ECE under the agent's own
+  temperature (a thinker's for the mode it answers in, or the `before`
+  temperatures given) and under the calibration's."
+  ([agent items cal]
+   (evaluate agent items cal (if-let [m (mode agent)] (ag/calibration-of agent m) (ag/calibration-of agent))))
+  ([_agent items cal before-cal]
+   (evaluate* items cal before-cal)))
 
 (defn read-cases
   "Labeled cases from a JSON-lines or EDN file."
@@ -206,12 +243,17 @@
     m))
 
 (defn -main
-  "jolt -M:calibrate --labels cases.jsonl --out calibration.edn [--data DIR] [--model NAME] [--all] [--thinking true|false]
+  "jolt -M:calibrate --labels cases.jsonl --out calibration.edn [--data DIR] [--model NAME] [--all]
+                     [--thinking true|false | --budgets 0,128,256,512]
    Fits on the even-numbered cases and reports on the odd ones held out
    (--all fits on every case), prints the per-bucket report, writes the
    calibration. A thinker is fit in the mode it answers in by default, or
    the one --thinking names, and its fit is written under that mode
-   (:thinking / :direct), next to the other mode's when --out has one."
+   (:thinking / :direct), next to the other mode's when --out has one.
+   --budgets 0,128,256,512 fits a thinker at every budget from one thought
+   per question (lev.think/sweep): 0 as :direct, the others under
+   :thinking :by-budget, with accuracy, mean thought tokens and modelled
+   latency per budget."
   [& args]
   (let [opts (cfg/parse-args args)
         ctx (cfg/context opts)
@@ -233,6 +275,30 @@
                             (vec (keep-indexed (fn [i c] (when (odd? i) c)) cases))])
         _ (println (format "%s%s: %d cases to fit on%s" model (if-let [m (mode agent)] (str " (" (name m) ")") "")
                            (count fit-cases) (if (seq held) (format ", %d held out" (count held)) "")))
+        budgets (when-let [b (get opts "--budgets")]
+                  (when-not (mode agent)
+                    (println "--budgets fits a thinker") (System/exit 2))
+                  (vec (sort (distinct (map #(Long/parseLong (str/trim %)) (str/split (str b) #","))))))
+        _ (when budgets
+            (let [by (collect-sweep agent fit-cases budgets)
+                  fitted (sweep-calibration by)
+                  report (fn [title by]
+                           (println title)
+                           (println (format "  %-8s %-12s %5s %6s %8s %9s   %-22s %-22s" "budget" "bucket" "n" "acc" "tokens" "ms"
+                                            "before: T / NLL / ECE" "after: T / NLL / ECE"))
+                           (doseq [[budget items] by
+                                   :let [after-cal (if (pos? budget) (ag/mode-calibration fitted :thinking budget) (:direct fitted))
+                                         before-cal (if (pos? budget) (ag/calibration-of agent :thinking budget) (ag/calibration-of agent :direct))
+                                         mean #(/ (reduce + 0.0 (keep % items)) (max 1 (count items)))]
+                                   [b {:keys [n accuracy before after]}] (evaluate agent items after-cal before-cal)]
+                             (println (format "  %-8d %-12s %5d %5.1f%% %8.1f %9.1f   %5.2f / %5.3f / %5.3f   %5.2f / %5.3f / %5.3f"
+                                              budget b n (* 100 accuracy) (mean :tokens) (mean :ms)
+                                              (:t before) (:nll before) (:ece before) (:t after) (:nll after) (:ece after)))))]
+              (report "fitted cases:" by)
+              (when (seq held) (report "held-out cases:" (collect-sweep agent held budgets)))
+              (spit out (pr-str (merge (when (.exists (io/file out)) (load-calibration out)) fitted)))
+              (println "wrote" out)
+              (System/exit 0)))
         ;; each case is run once: a thinker takes seconds a state
         fit-items (collect agent fit-cases)
         fitted (calibration fit-items)

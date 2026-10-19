@@ -6,13 +6,15 @@
     POST /v1/systemone        {\"state\" ..., \"questions\" {...},
                                \"constraints\"? [...], \"on_infeasible\"?,
                                \"model\"? \"lang\"? \"task\"?
-                               \"thinking\"? bool, \"thought\"? bool, \"debias\"? bool}
+                               \"thinking\"? bool, \"thought\"? bool, \"debias\"? bool,
+                               \"think_budget\"? int, \"think_deadline_ms\"? number}
                               -> {\"model\" \"english\", \"answers\" {...},
                                   \"usage\" {...}, \"thinking\"? {...},
                                   \"constraints\"? {...}, \"routing\" {...}}
                               with \"escalate\" {\"model\" thinker, \"threshold\"?
                               0.8 or {type: t}, \"thinking\"?}: the answers below the
-                              threshold are re-asked on the thinker and the
+                              threshold are re-asked on the thinker (with its
+                              \"think_budget\"? / \"think_deadline_ms\"?) and the
                               body carries an \"escalation\" report (lev.patterns)
     POST /v1/systemone/batch  the same body with \"states\" [...] (1-256) in place
                               of \"state\" -> {\"results\" [one systemone answer per
@@ -54,7 +56,9 @@
   typed-decisions, en, ml, ...) to pick one, or a thinker's name (the
   generative models config.edn :thinkers / --thinker declare; lev.think)
   for the slow accurate answer, with `thinking` (bool) overriding the
-  thinker's default and `thought` (bool) adding its reasoning to each
+  thinker's default, `think_budget` (0 to its max-think-tokens; 0 answers
+  directly) capping the thought, `think_deadline_ms` the wall time the
+  call's thoughts share, and `thought` (bool) adding its reasoning to each
   answer; `lang` and `task` are the Router's other hints. `constraints` is a list of lev.constraints over
   the question ids (a workflow's own come first, the request's are added),
   decided jointly after the forward pass: every answer then carries
@@ -157,6 +161,21 @@
        (if allow-empty? {} (throw (ex-info "json: request body is empty" {:type :invalid-json})))
        (json/read-str text)))))
 
+(defn- check-think-limits
+  "think_budget (an integer, 0 or more) and think_deadline_ms (a number, 0
+  or more) in `m`, only with a thinker; the budget's upper bound is the
+  thinker's own, checked when it answers."
+  [m loc thinker? thinker-names]
+  (for [[k ok? what] [["think_budget" #(and (integer? %) (<= 0 %)) "an integer, 0 or more"]
+                      ["think_deadline_ms" #(and (number? %) (<= 0 %)) "a number of milliseconds, 0 or more"]]
+        :when (contains? m k)
+        :let [v (get m k)]
+        :when (or (not (ok? v)) (not thinker?))]
+    (if (ok? v)
+      (detail (conj loc k) (str k " applies to a thinker model (model: one of "
+                                (str/join ", " thinker-names) ")") "value_error")
+      (detail (conj loc k) (str k " must be " what) "type_error"))))
+
 (defn- check-routing-fields
   "model / lang / task must be strings, and model a known checkpoint or
   thinker (or the engine's own name); thinking / thought booleans, and
@@ -180,7 +199,8 @@
        (if (boolean? v)
          (detail ["body" k] (str k " applies to a thinker model (model: one of "
                                 (str/join ", " (router/thinker-names rt)) ")") "value_error")
-         (detail ["body" k] (str k " must be true or false") "type_error"))))))
+         (detail ["body" k] (str k " must be true or false") "type_error")))
+     (check-think-limits body ["body"] thinker? (router/thinker-names rt)))))
 
 (def ^:private infeasible-modes #{"min_violations" "raise"})
 
@@ -217,7 +237,8 @@
                 (catch Exception ex
                   [(detail ["body" "escalate" "threshold"] (str "escalate." (ex-message ex)) "value_error")])))
          (when (and (contains? e "thinking") (not (boolean? (get e "thinking"))))
-           [(detail ["body" "escalate" "thinking"] "escalate.thinking must be true or false" "type_error")]))))))
+           [(detail ["body" "escalate" "thinking"] "escalate.thinking must be true or false" "type_error")])
+         (check-think-limits e ["body" "escalate"] true (router/thinker-names rt)))))))
 
 (defn- check-state [body]
   (let [state (get body "state")]
@@ -260,6 +281,8 @@
      :thinking (get body "thinking")
      :thought (get body "thought")
      :debias (get body "debias")
+     :think-budget (get body "think_budget")
+     :think-deadline-ms (get body "think_deadline_ms")
      :escalate (get body "escalate")}))
 
 (defn- predict
@@ -267,7 +290,8 @@
   the body has an escalate object), with the errors the decoder throws
   pointed at the request: a bad constraint at its index among the
   request's own (`offset` of them belong to the workflow)."
-  [rt lock state questions {:keys [model lang task constraints on-infeasible thinking thought debias escalate]} offset]
+  [rt lock state questions {:keys [model lang task constraints on-infeasible thinking thought debias escalate
+                                   think-budget think-deadline-ms]} offset]
   (try (locking lock
          (if escalate
            (pat/escalate rt state questions
@@ -275,10 +299,13 @@
                                   :constraints constraints :on-infeasible on-infeasible
                                   :thought thought :debias debias}
                            (contains? escalate "threshold") (assoc :threshold (get escalate "threshold"))
-                           (contains? escalate "thinking") (assoc :thinking (get escalate "thinking"))))
+                           (contains? escalate "thinking") (assoc :thinking (get escalate "thinking"))
+                           (contains? escalate "think_budget") (assoc :think-budget (get escalate "think_budget"))
+                           (contains? escalate "think_deadline_ms") (assoc :think-deadline-ms (get escalate "think_deadline_ms"))))
            (router/predict rt state questions :model model :lang lang :task task
                            :constraints constraints :on-infeasible on-infeasible
-                           :thinking thinking :thought thought :debias debias)))
+                           :thinking thinking :thought thought :debias debias
+                           :think-budget think-budget :think-deadline-ms think-deadline-ms)))
        (catch Exception e
          (if (= :invalid-constraint (:type (ex-data e)))
            (throw (ex-info (ex-message e) (assoc (ex-data e) :offset offset)))
@@ -331,12 +358,13 @@
                                (check-questions (get body "questions")))))]
     (if (seq details)
       (unprocessable details)
-      (let [{:keys [model lang task constraints on-infeasible thinking thought debias]} (routing-opts body)]
+      (let [{:keys [model lang task constraints on-infeasible thinking thought debias think-budget think-deadline-ms]} (routing-opts body)]
         (json-response 200 {"results" (try (locking lock
                                              (router/predict-batch rt (get body "states") (get body "questions")
                                                                    :model model :lang lang :task task
                                                                    :constraints constraints :on-infeasible on-infeasible
-                                                                   :thinking thinking :thought thought :debias debias))
+                                                                   :thinking thinking :thought thought :debias debias
+                                                                   :think-budget think-budget :think-deadline-ms think-deadline-ms))
                                            (catch Exception e
                                              (if (= :invalid-constraint (:type (ex-data e)))
                                                (throw (ex-info (ex-message e) (assoc (ex-data e) :offset 0)))

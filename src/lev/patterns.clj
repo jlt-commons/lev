@@ -61,11 +61,12 @@
 (defn escalate
   "Answer on the fast model (routed, or :fast-model), then re-ask the
   questions below :threshold (0.8) on :model (a thinker; :thinking /
-  :thought as for it) and merge: the answers keep their order, the
+  :thought / :think-budget / :think-deadline-ms as for it) and merge: the answers keep their order, the
   escalated ones are the thinker's, and an \"escalation\" report names
   them with the thinker's usage. :constraints / :on-infeasible decide
   over the merged answers. Needs a router."
-  [rt state questions {:keys [threshold model fast-model lang task thinking thought debias constraints on-infeasible]}]
+  [rt state questions {:keys [threshold model fast-model lang task thinking thought debias constraints on-infeasible
+                              think-budget think-deadline-ms]}]
   (when-not (router/router? rt)
     (throw (ex-info "escalation needs a router (the thinker is named by model)" {:type :invalid-request})))
   (let [ths (thresholds threshold)
@@ -76,7 +77,8 @@
         unsure-set (set unsure)
         slow (when (seq unsure)
                (router/predict rt state (seq/ordered-map (filter (fn [[qid _]] (contains? unsure-set (key-str qid))) questions))
-                               :model model :thinking thinking :thought thought))
+                               :model model :thinking thinking :thought thought
+                               :think-budget think-budget :think-deadline-ms think-deadline-ms))
         merged (seq/ordered-map
                 (map (fn [[qid a]] [qid (if (contains? unsure-set qid) (get-in slow ["answers" qid]) a)])
                      (get fast "answers")))

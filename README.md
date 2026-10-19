@@ -243,6 +243,16 @@ and ECE per bucket on a held-out half, then writes a file that
 over the checkpoint's own. `--calibration FILE` and `LEV_CALIBRATION` do
 the same for every encoder.
 
+A thinker thinking and the same thinker answering at once are different
+readouts with different temperatures, so a thinker is fit per mode:
+`--model minicpm5 --thinking false` fits its direct answers under
+`:direct`, `--thinking true` its thought-through ones under `:thinking`,
+both kept in the one file. `--budgets 0,128,256,512` fits every budget
+from one thought per case (the thought at the largest budget, its answer
+also read where it reached each smaller one), with accuracy, thought
+tokens and modelled latency per budget; an answer then takes the
+temperatures of the largest calibrated budget at or below its own.
+
 A refit changes no answer. Temperature scaling keeps every argmax, so
 only what `probabilities` and `confidence` mean which the gate reads moves.
 Labeled cases are JSON lines:
@@ -279,7 +289,9 @@ noul), a calibration map or its file's path.
 {:thinkers {"qwen3.5-4b" {:model "/Users/me/models/Qwen_Qwen3.5-4B-Q8_0.gguf" :thinking false}   ; the escalation model, answering at once
             "minicpm5" {:model "/Users/me/models/MiniCPM5-2B-Q8_0.gguf"   ; a thinking model, every key at its default:
                         :thinking true          ; think before answering (a request can override)
-                        :max-think-tokens 2048  ; the budget; the thought is closed when it runs out
+                        :max-think-tokens 2048  ; the budget; the thought is closed when it runs out (a request's think_budget at most)
+                        :think-deadline-ms 0    ; a request's default think_deadline_ms (0: none)
+                        :think-deadline-reserve-ms nil   ; time kept back for the answer under a deadline (nil: learned)
                         :n-ctx 4096 :n-gpu-layers -1 :threads 0   ; llama.cpp: context, layers on the GPU (-1 all), threads (0 = its default)
                         :temperature 0.0 :top-p 0.95 :min-p 0.0 :seed 42     ; the thought: greedy by default (95% vs 91% sampled on authored144)
                         :jev true               ; thinking off: every question in one pass (Jev mode, below)
@@ -287,7 +299,8 @@ noul), a calibration map or its file's path.
                         :thinks true            ; false: no thinking mode (no <think> tags; thinking stays off)
                         :prompt "lev"           ; or "semif", "jevk5", "winnow" (below)
                         :template "chatml"      ; the chat format: chatml (Qwen, MiniCPM) or gemma4 (Gemma 4, Winnow)
-                        :calibration 1.0        ; temperature(s) over the option scores (Calibration)
+                        :calibration 1.0        ; temperature(s) over the option scores (Calibration), per mode under
+                                                ; :thinking / :direct, the thinking ones per budget under :by-budget
                         :layout "question"}}    ; or "catalog": questions before the state (fast batches, much less accurate)
  :max-thinkers 1}                                ; resident at once (each is GBs)
 ```
@@ -656,7 +669,8 @@ and adds `Router` along with presets.
 ```
 POST /v1/systemone        Authorization: Bearer <key>   (only if a key is configured)
 {"state": <string|object|array>, "questions": {"<id>": {...}}, "constraints"?: [...], "on_infeasible"?: "min_violations"|"raise",
- "model"?: ..., "lang"?: ..., "task"?: ..., "thinking"?: bool, "thought"?: bool, "debias"?: bool, "escalate"?: {...}}
+ "model"?: ..., "lang"?: ..., "task"?: ..., "thinking"?: bool, "thought"?: bool, "debias"?: bool,
+ "think_budget"?: int, "think_deadline_ms"?: number, "escalate"?: {...}}
 -> {"model": "english", "answers": {"<id>": {...}}, "usage": {"input_tokens": n, "output_tokens": 0},
     "truncated"?: {"<id>": tokens}, "debias"?: {"<id>": rotations},
     "constraints"?: {"feasible": bool, "decoder": ..., "exact": bool, "violations": [...]},
@@ -684,10 +698,17 @@ GET  /health              -> {"status": "ok", "model": "lev", "loaded": [...], "
 
 Questions and answers score and noul, plus the `action.act_probability` extension on
 the encoders' answers. A thinker answers in the same shapes without
-`action`, adds a `"thinking": {"enabled", "tokens", "max_tokens"}`
-report, and on request, with `"thought": true`, each answer's reasoning
-under `"thought"`. `"thinking": false` asks it to answer at once (Jev
-mode). On a GPU Qwen3.5-4B does that in about 170 ms a question at 95% on
+`action`, adds a `"thinking": {"enabled", "tokens", "max_tokens",
+"deadline_ms"?, "closes"?}` report, and on request, with `"thought": true`,
+each answer's reasoning under `"thought"`. `"thinking": false` asks it to
+answer at once (Jev mode). `"think_budget": N` caps the thought at N tokens
+(up to the thinker's `:max-think-tokens`; 0 answers at once), and
+`"think_deadline_ms": D` caps the call's thinking in time: each question
+gets the time left over the questions left, its thought is closed early
+enough for its answer to be read, and one with too little time left is
+answered at once. `"closes"` counts how the thoughts ended: `natural`
+(the model's own tag), `budget`, `eos`, `deadline`, or `fallback`
+(answered at once for lack of time). On a GPU Qwen3.5-4B does that in about 170 ms a question at 95% on
 authored144. MiniCPM5-2B takes about 100 ms but scores 75%, and needs
 its thinking to reach 95%.
 
@@ -912,6 +933,8 @@ jolt -M bench/authored144.clj --model typed-decisions            # 67%
 jolt -M bench/authored144.clj --model qwen3.5-4b                 # 95%, ~175 ms a case (Metal), answering at once
 jolt -M bench/authored144.clj --model minicpm5 --thinking false  # 75%, ~100 ms a case (Metal)
 jolt -M bench/authored144.clj --model minicpm5                   # 95%, seconds a case
+jolt -M bench/authored144.clj --model minicpm5 --budgets 0,128,256,512   # every budget from one thought a case
+jolt -M bench/authored144.clj --model minicpm5 --deadline 2000   # thinking capped at 2 s a case
 jolt -M bench/authored144.clj --debias                            # english with option-rotation averaging: 64%
 jolt -M bench/triad.clj english                                   # AG News / BoolQ / SST-5, with ECE and what a gate keeps
 jolt -M bench/workflow.clj                                        # a 4-question call on a short and a long state, p50 / p95

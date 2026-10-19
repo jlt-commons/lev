@@ -118,6 +118,120 @@
       (is (= "Let me see...\n</think>" (get-in out ["answers" "churn_risk" "thought"])))
       (is (= ["type" "noul" "confidence" "thought"] (keys (get-in out ["answers" "churn_risk"])))))))
 
+(defn- softmax-at [xs t] (llm/softmax (mapv #(/ % t) xs)))
+
+(defn- close? [a b] (< (Math/abs (- (double a) (double b))) 1e-4))
+
+(defn- timed-thinker
+  "A thinker whose decide reports a close, timings and cut rows the way
+  lev.llm/decide does; `close-fn` (opts -> close) picks the close."
+  [calls close-fn & [cfg]]
+  (think/thinker (merge {:name "fake" :thinking true :max-think-tokens 512} cfg)
+                 {:decide (fn [prompt options opts]
+                            (swap! calls conj {:prompt prompt :options options :opts opts})
+                            (let [lp (get scores (vec options))
+                                  close (when (pos? (:think-max opts)) (close-fn opts))
+                                  made (case close nil 0 :budget (:think-max opts) 30)]
+                              {:logp lp :thought "" :tokens made :close close
+                               :prefill-ms 5.0 :think-ms 100.0 :read-ms 40.0
+                               :cuts (mapv (fn [k] {:at k :logp lp :think-ms (* 2.0 k) :read-ms 40.0}) (:cuts opts))}))
+                  :count-tokens (constantly 1)}))
+
+(deftest a-call-can-set-its-own-think-budget
+  (let [calls (atom [])
+        t (timed-thinker calls (constantly :natural))
+        one (select-keys questions ["churn_risk"])]
+    (testing "a budget thinks with that many tokens at most"
+      (let [out (think/system-one t state one {:think-budget 64})]
+        (is (= 64 (:think-max (:opts (last @calls)))))
+        (is (str/ends-with? (:prompt (last @calls)) "<think>\n"))
+        (is (= {"enabled" true "tokens" 30 "max_tokens" 64 "closes" {"natural" 1}} (get out "thinking")))))
+    (testing "budget 0 answers directly, whatever the thinker's default"
+      (let [out (think/system-one t state one {:think-budget 0})]
+        (is (= 0 (:think-max (:opts (last @calls)))))
+        (is (= {"enabled" false "tokens" 0 "max_tokens" 0} (get out "thinking")))))
+    (testing "a budget past the thinker's :max-think-tokens is refused before any thinking"
+      (reset! calls [])
+      (let [e (try (think/system-one t state one {:think-budget 513}) nil (catch Exception e e))]
+        (is (= :invalid-request (:type (ex-data e))))
+        (is (= "think_budget" (:field (ex-data e))))
+        (is (str/includes? (ex-message e) "512")))
+      (is (empty? @calls)))
+    (testing "a positive budget with thinking off, or on a model that cannot think, is refused"
+      (is (thrown-with-msg? Exception #"thinking" (think/system-one t state one {:think-budget 64 :thinking false})))
+      (is (thrown-with-msg? Exception #"cannot think"
+                            (think/system-one (timed-thinker calls (constantly :natural) {:thinks false}) state one {:think-budget 64}))))))
+
+(deftest a-deadline-shares-the-time-left-between-the-questions
+  (let [calls (atom [])
+        t (timed-thinker calls (constantly :deadline) {:think-deadline-reserve-ms 50})]
+    (testing "each question gets the time left over the questions left, and the reserve"
+      (let [out (think/system-one t state questions {:think-deadline-ms 4000})
+            shares (map (comp :deadline-ms :opts) @calls)]
+        (is (= 4 (count shares)))
+        (is (< 900 (first shares) 1001) (pr-str shares))
+        (is (every? #(= 50.0 (double (:reserve-ms (:opts %)))) @calls))
+        (is (= {"enabled" true "tokens" 120 "max_tokens" 512 "deadline_ms" 4000 "closes" {"deadline" 4}}
+               (get out "thinking")))))
+    (testing "a share smaller than the reserve answers directly instead"
+      (reset! calls [])
+      (let [out (think/system-one t state (select-keys questions ["churn_risk"]) {:think-deadline-ms 30})]
+        (is (= 0 (:think-max (:opts (first @calls)))))
+        (is (= {"fallback" 1} (get-in out ["thinking" "closes"])))))
+    (testing "without thinking a deadline does nothing"
+      (reset! calls [])
+      (think/system-one t state (select-keys questions ["churn_risk"]) {:think-deadline-ms 4000 :thinking false})
+      (is (nil? (:deadline-ms (:opts (first @calls))))))))
+
+(deftest the-deadline-default-and-the-learned-reserve
+  (let [calls (atom [])
+        t (timed-thinker calls (constantly :natural) {:think-deadline-ms 2000})
+        one (select-keys questions ["churn_risk"])]
+    (testing "the thinker's :think-deadline-ms applies when the call sets none; 0 turns it off"
+      (think/system-one t state one nil)
+      (is (< 1900 (:deadline-ms (:opts (last @calls))) 2001))
+      (think/system-one t state one {:think-deadline-ms 0})
+      (is (nil? (:deadline-ms (:opts (last @calls))))))
+    (testing "the reserve starts at 100 ms, then is 1.5 x the p95 of the readouts seen + 10 ms"
+      (let [t (timed-thinker calls (constantly :natural) {:think-deadline-ms 2000})]
+        (think/system-one t state one nil)
+        (is (= 100.0 (double (:reserve-ms (:opts (last @calls))))))
+        (dotimes [_ 8] (think/system-one t state one nil))
+        (is (< (Math/abs (- 70.0 (:reserve-ms (:opts (last @calls))))) 1e-9) "40 ms readouts: 1.5 x 40 + 10")))))
+
+(deftest a-thinking-temperature-can-be-per-budget
+  (let [cal {:temperature [1.0 1.0 1.0]
+             :thinking {:temperature [2.0 2.0 2.0]
+                        :by-budget {64 {:temperature [3.0 3.0 3.0]} 256 {:temperature [5.0 5.0 5.0]}}}}
+        dept (select-keys questions ["department"])
+        probs (fn [close opts]
+                (let [t (timed-thinker (atom []) (constantly close) {:calibration cal})]
+                  (vals (get-in (think/system-one t state dept opts) ["answers" "department" "probabilities"]))))
+        at (fn [T] (softmax-at [-0.1 -3.0 -4.0] T))
+        same? (fn [a b] (every? true? (map close? a b)))]
+    (is (same? (probs :natural {:think-budget 256}) (at 5.0)) "a calibrated budget's own")
+    (is (same? (probs :natural {:think-budget 100}) (at 3.0)) "else the nearest calibrated budget below")
+    (is (same? (probs :natural {:think-budget 32}) (at 2.0)) "below them all, the thinking temperatures")
+    (is (same? (probs :deadline {:think-budget 256 :think-deadline-ms 60000}) (at 2.0))
+        "a deadline cut at 30 tokens reads as a 30-token budget")
+    (is (= {:temperature [3.0 3.0 3.0]} (ag/mode-calibration cal :thinking 64)))))
+
+(deftest a-sweep-reads-every-budget-from-one-thought
+  (let [calls (atom [])
+        t (timed-thinker calls (constantly :budget))
+        rows (think/sweep t state (select-keys questions ["department" "churn_risk"]) [0 64 128 256])]
+    (testing "one direct ask and one thought at the largest budget, cut at the others, per question"
+      (is (= [0 256 0 256] (map (comp :think-max :opts) @calls)))
+      (is (= [[64 128] [64 128]] (keep (comp not-empty :cuts :opts) @calls))))
+    (testing "per question and budget: the raw scores in answer order, the thought tokens and the modelled latency"
+      (is (= ["department" "churn_risk"] (map :qid rows)))
+      (let [{:keys [budgets]} (second rows)]
+        (is (= [0 64 128 256] (keys budgets)))
+        (is (= [-1.1 -0.4] (get-in budgets [64 :logits])) "a noul's as [false true]")
+        (is (= [0 64 128 256] (map :tokens (vals budgets))))
+        (is (= 173.0 (get-in budgets [64 :ms])) "prefill + the thought to the cut + its readout")
+        (is (= 145.0 (get-in budgets [256 :ms])) "the whole call")))))
+
 (deftest constraints-decide-over-the-thinkers-probabilities
   (let [calls (atom [])
         out (think/system-one (fake-thinker calls scores) state questions
@@ -279,10 +393,6 @@
       (is (= [(json/write-str (seq/serialize-state state))] (:contexts jev)))
       (is (= ["A<|im_end|>" "B<|im_end|>" "C<|im_end|>"] (:values (first (:fields jev)))))
       (is (= "billing" (get-in out ["answers" "department" "choice"]))))))
-
-(defn- softmax-at [xs t] (llm/softmax (mapv #(/ % t) xs)))
-
-(defn- close? [a b] (< (Math/abs (- (double a) (double b))) 1e-4))
 
 (deftest a-calibration-scales-the-option-scores-per-type
   (let [t (think/thinker {:name "fake" :thinking false :jev false :calibration {:temperature [2.0 1.0 4.0]}}

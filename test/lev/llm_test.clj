@@ -75,6 +75,62 @@
           (is (str/ends-with? (str/trimr thought) "</think>") (subs thought (max 0 (- (count thought) 80))))
           (is (= "contradicted" (nth options (llm/argmax logp)))))))))
 
+(defn- lenses-prompt [m]
+  (llm/chat-prompt m [{:role "user"
+                       :content (str "State:\nThe optician ordered replacement lenses. The workshop confirms they have not yet been fitted."
+                                     "\n\nQuestion: Assess the claim: the replacement lenses have been fitted."
+                                     "\n\nOptions: supported, insufficient, contradicted\n\nReply with ANSWER: <option>.")}]
+                   {:thinking true}))
+
+(def lenses-options ["supported" "insufficient" "contradicted"])
+
+(deftest a-thought-reports-how-it-closed
+  (when (and (llm/available?) gguf)
+    (let [m @model
+          ask #(llm/decide m (lenses-prompt m) lenses-options (merge {:temperature 0.0} %))]
+      (testing "its own tag, with the time split into prefill / thought / readout"
+        (let [r (ask {:think-max 512})]
+          (is (= :natural (:close r)))
+          (is (every? #(pos? (get r %)) [:prefill-ms :think-ms :read-ms]))))
+      (testing "out of budget: closed by force at think-max"
+        (let [r (ask {:think-max 8})]
+          (is (= :budget (:close r)))
+          (is (= 8 (:tokens r)))))
+      (testing "the deadline closes it early, and the answer is still read"
+        (let [r (ask {:think-max 512 :deadline-ms 1.0})]
+          (is (= :deadline (:close r)))
+          (is (< (:tokens r) 512))
+          (is (= 3 (count (:logp r))))))
+      (testing "no thought, no close"
+        (is (nil? (:close (llm/decide m (llm/chat-prompt m [{:role "user" :content "Say yes."}] {:thinking false})
+                                      ["yes" "no"] {:think-max 0 :temperature 0.0}))))))))
+
+(deftest a-cut-reads-what-the-smaller-budget-would
+  (when (and (llm/available?) gguf)
+    (let [m @model
+          ask #(llm/decide m (lenses-prompt m) lenses-options (merge {:temperature 0.0} %))
+          swept (ask {:think-max 512 :cuts [8 16]})]
+      (is (= [8 16] (map :at (:cuts swept))))
+      (doseq [[k {:keys [logp think-ms read-ms]}] (map vector [8 16] (:cuts swept))]
+        (testing (str "greedy: the cut at " k " answers what a " k "-token budget answers")
+          (let [alone (ask {:think-max k})]
+            (is (= (llm/argmax logp) (llm/argmax (:logp alone))))
+            (is (every? #(< (Math/abs (double %)) 1e-2) (map - logp (:logp alone))) (pr-str logp (:logp alone)))
+            (is (pos? think-ms))
+            (is (pos? read-ms)))))
+      (testing "the final answer is the whole thought's, as without cuts"
+        (let [plain (ask {:think-max 512})]
+          (is (= (:tokens plain) (:tokens swept)))
+          (is (= (:thought plain) (:thought swept)))))
+      (testing "a cut past the thought's end reads the final answer"
+        (let [r (ask {:think-max 512 :cuts [500]})]
+          (when (< (:tokens r) 500)
+            (is (= (:logp r) (:logp (first (:cuts r)))))
+            (is (nil? (:think-ms (first (:cuts r))))))))
+      (testing "cuts must ascend inside the budget"
+        (is (thrown-with-msg? Exception #"cuts" (ask {:think-max 16 :cuts [16]})))
+        (is (thrown-with-msg? Exception #"cuts" (ask {:think-max 64 :cuts [16 8]})))))))
+
 (deftest escapes-special-token-text-in-user-text
   (when (and (llm/available?) gguf)
     (let [m @model]

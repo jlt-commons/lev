@@ -375,17 +375,21 @@
 (defn predict
   "Route, then answer every question on the chosen model: the system-one
   map plus a \"routing\" key with the decision. :constraints /
-  :on-infeasible go to agent/system-one; :thinking / :thought to a thinker.
+  :on-infeasible go to agent/system-one; :thinking / :thought /
+  :think-budget / :think-deadline-ms to a thinker.
   A content-routed model that is not available falls back to the default
   (resolve-decision)."
-  [router state questions & {:keys [model task lang constraints on-infeasible thinking thought debias]}]
+  [router state questions & {:keys [model task lang constraints on-infeasible thinking thought debias
+                                    think-budget think-deadline-ms]}]
   (let [d (resolve-decision router (route router state questions :model model :task task :lang lang) (some? model))
         agent (load-model router (get d "model"))]
     (assoc (ag/system-one agent state questions
                           (cond-> {:constraints constraints :on-infeasible on-infeasible}
                             (some? thinking) (assoc :thinking thinking)
                             (some? thought) (assoc :thought thought)
-                            (some? debias) (assoc :debias debias)))
+                            (some? debias) (assoc :debias debias)
+                            (some? think-budget) (assoc :think-budget think-budget)
+                            (some? think-deadline-ms) (assoc :think-deadline-ms think-deadline-ms)))
            "routing" d)))
 
 (defn embed
@@ -412,7 +416,8 @@
   all in one lev.agent/system-one-batch, which is one pass in Jev mode;
   otherwise every state is routed and answered on its own, since content
   routing looks at the state."
-  [router states questions & {:keys [model constraints on-infeasible thinking thought debias] :as opts}]
+  [router states questions & {:keys [model constraints on-infeasible thinking thought debias
+                                     think-budget think-deadline-ms] :as opts}]
   (if (and (some? model) (thinker? router model))
     (let [d (resolve-decision router (route router (first states) questions :model model) true)
           agent (load-model router (get d "model"))]
@@ -421,5 +426,7 @@
                                  (cond-> {:constraints constraints :on-infeasible on-infeasible}
                                    (some? thinking) (assoc :thinking thinking)
                                    (some? thought) (assoc :thought thought)
-                                   (some? debias) (assoc :debias debias)))))
+                                   (some? debias) (assoc :debias debias)
+                                   (some? think-budget) (assoc :think-budget think-budget)
+                                   (some? think-deadline-ms) (assoc :think-deadline-ms think-deadline-ms)))))
     (mapv #(apply predict router % questions (mapcat identity opts)) states)))

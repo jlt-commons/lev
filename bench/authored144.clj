@@ -7,20 +7,29 @@
   its options as the criteria, its state as the state.
 
     jolt -M bench/authored144.clj [--data DIR] [--model NAME] [--thinking true|false] [--debias]
+                                  [--budget N] [--deadline MS] [--budgets 0,128,256,512]
                                   [--calibration FILE] [--file bench/data/authored144.jsonl] [--out results.jsonl]
 
   --model is a checkpoint (english, the default; typed-decisions;
   multilingual) or a thinker from config.edn :thinkers / LEV_THINKER
-  (`thinker`), with --thinking overriding its default. Prints per-family
+  (`thinker`), with --thinking overriding its default, --budget its
+  think_budget and --deadline its think_deadline_ms. Prints per-family
   accuracy, balanced accuracy and ms per case; --out writes one line per
-  case with the prediction and the probabilities."
+  case with the prediction and the probabilities.
+
+  --budgets reports a thinker at every listed budget from one thought per
+  case (lev.think/sweep: the thought at the largest budget, cut at the
+  others, exact under greedy decoding), the ms per case modelled from the
+  thought's own timings; --out then writes one file per budget
+  (results.jsonl -> results.b256.jsonl)."
   (:require [clojure.edn]
             [clojure.string :as str]
             [lev.agent :as ag]
             [lev.config :as cfg]
             [lev.json :as json]
             [lev.router :as router]
-            [lev.sequence :as seq]))
+            [lev.sequence :as seq]
+            [lev.think :as think]))
 
 (defn- rows [file]
   (mapv json/read-str (remove str/blank? (str/split-lines (slurp file)))))
@@ -40,6 +49,27 @@
              :predicted (get a "choice") :probabilities (get a "probabilities") :ms ms
              :output-tokens (get-in out ["usage" "output_tokens"] 0)}))
         rs))
+
+(defn sweep
+  "{budget [result ...]}: `run`'s results at every budget from one thought
+  per case."
+  [agent rs budgets]
+  (let [per-row (mapv (fn [r]
+                        (let [criteria (seq/ordered-map (map (fn [o] [(get o "id") (get o "description")]) (get r "options")))
+                              q (array-map "type" "choice" "instructions" (get r "question") "criteria" criteria)
+                              [{iq :q by :budgets}] (think/sweep agent (get r "state") {"decision" q} budgets)
+                              ids (keys criteria)]
+                          (into {}
+                                (map (fn [[b {:keys [logits tokens ms]}]]
+                                       (let [p (think/calibrate (:cfg agent) (when (pos? b) b) iq logits)
+                                             probs (seq/ordered-map (map vector ids p))]
+                                         [b {:id (get r "id") :family (get r "family")
+                                             :expected (get (nth (get r "options") (get r "label")) "id")
+                                             :predicted (key (reduce (fn [a e] (if (> (val e) (val a)) e a)) probs))
+                                             :probabilities probs :ms ms :output-tokens tokens}])))
+                                by)))
+                      rs)]
+    (into (sorted-map) (map (fn [b] [b (mapv #(get % b) per-row)])) (distinct budgets))))
 
 (defn ece
   "Expected calibration error of the top probability, ten bins."
@@ -105,9 +135,23 @@
                 agent)
         run-opts (cond-> {}
                    (contains? opts "--thinking") (assoc :thinking (= "true" (get opts "--thinking")))
+                   (contains? opts "--budget") (assoc :think-budget (Long/parseLong (str (get opts "--budget"))))
+                   (contains? opts "--deadline") (assoc :think-deadline-ms (Double/parseDouble (str (get opts "--deadline"))))
                    (true? (get opts "--debias")) (assoc :debias true))
         run-opts (when (seq run-opts) run-opts)
         rs (rows file)
+        budgets (when-let [b (get opts "--budgets")]
+                  (vec (sort (distinct (map #(Long/parseLong (str/trim %)) (str/split (str b) #","))))))
+        _ (when budgets
+            (sweep agent (take 3 rs) budgets)        ; warm up
+            (doseq [[b results] (sweep agent rs budgets)]
+              (println (str model " at budget " b " on " file ":"))
+              (report results)
+              (when-let [out (get opts "--out")]
+                (let [f (if (str/ends-with? out ".jsonl") (str (subs out 0 (- (count out) 6)) ".b" b ".jsonl") (str out ".b" b))]
+                  (spit f (str/join "\n" (map #(seq/json-str (into (array-map) %)) results)))
+                  (println "wrote" f))))
+            (System/exit 0))
         _ (run agent (take 3 rs) run-opts)            ; warm up
         results (run agent rs run-opts)]
     (println (str model (when run-opts (str " (thinking " (:thinking run-opts) ")")) " on " file ":"))

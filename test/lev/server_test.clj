@@ -344,6 +344,26 @@
         (is (= 12 (get-in b ["usage" "output_tokens"])))
         (is (true? (get-in b ["thinking" "enabled"])))
         (is (every? #(= 64 (:think-max (:opts %))) @seen))))
+    (testing "think_budget and think_deadline_ms per request"
+      (reset! seen [])
+      (let [[st b] (post "/v1/systemone" (assoc base "model" "minicpm5" "think_budget" 16 "think_deadline_ms" 60000))]
+        (is (= 200 st) (pr-str b))
+        (is (every? #(= 16 (:think-max (:opts %))) @seen))
+        (is (every? #(number? (:deadline-ms (:opts %))) @seen))
+        (is (= 16 (get-in b ["thinking" "max_tokens"])))
+        (is (= 60000 (get-in b ["thinking" "deadline_ms"]))))
+      (let [[st b] (post "/v1/systemone" (assoc base "model" "minicpm5" "think_budget" 0))]
+        (is (= 200 st))
+        (is (false? (get-in b ["thinking" "enabled"]))))
+      (let [loc (fn [body] (let [[st b] (post "/v1/systemone" body)] [st (get-in b ["detail" 0 "loc"])]))]
+        (is (= [422 ["body" "think_budget"]] (loc (assoc base "model" "minicpm5" "think_budget" 65)))
+            "past the thinker's max-think-tokens")
+        (is (= [422 ["body" "think_budget"]] (loc (assoc base "model" "minicpm5" "think_budget" -1))))
+        (is (= [422 ["body" "think_budget"]] (loc (assoc base "model" "minicpm5" "think_budget" 1.5))))
+        (is (= [422 ["body" "think_budget"]] (loc (assoc base "model" "minicpm5" "think_budget" 8 "thinking" false))))
+        (is (= [422 ["body" "think_deadline_ms"]] (loc (assoc base "model" "minicpm5" "think_deadline_ms" "soon"))))
+        (is (= [422 ["body" "think_budget"]] (loc (assoc base "model" "english" "think_budget" 8)))
+            "a checkpoint does not think")))
     (testing "thinking: false and thought: true per request"
       (reset! seen [])
       (let [[st b] (post "/v1/systemone" (assoc base "model" "minicpm5" "thinking" false "thought" true))]
@@ -438,6 +458,11 @@
         (is (= 200 st))
         (is (= "demo" (get b "workflow")))
         (is (contains? b "escalation"))))
+    (testing "escalate carries the thinker's think_budget, and checks it"
+      (let [[st b] (post "/v1/systemone" (assoc base "escalate" {"threshold" 0.6 "model" "slow" "think_budget" 0}))]
+        (is (= 200 st) (pr-str b)))
+      (is (= ["body" "escalate" "think_budget"]
+             (get-in (second (post "/v1/systemone" (assoc base "escalate" {"model" "slow" "think_budget" "lots"}))) ["detail" 0 "loc"]))))
     (testing "escalate must name a thinker and a threshold in [0, 1]"
       (let [loc (fn [b] (get-in b ["detail" 0 "loc"]))]
         (is (= ["body" "escalate" "model"] (loc (second (post "/v1/systemone" (assoc base "escalate" {"threshold" 0.5}))))))

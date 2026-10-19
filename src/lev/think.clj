@@ -40,7 +40,15 @@
    ;; assistant turn's opening directly, and thinking stays off whatever
    ;; a request asks
    :thinks true
+   ;; the most a thought may take, and a call's think_budget at most
    :max-think-tokens 2048
+   ;; a call's default think_deadline_ms (0: none): the wall time a call's
+   ;; thoughts share, each closed early enough for its answer to be read
+   :think-deadline-ms 0
+   ;; nil: the readout's expected time, kept back from a deadline, is
+   ;; learned (1.5 x the p95 of the last 64 readouts + 10 ms, 100 ms until
+   ;; 8 are seen); a number fixes it
+   :think-deadline-reserve-ms nil
    :n-ctx 4096
    :n-gpu-layers -1
    :threads 0
@@ -97,7 +105,14 @@
       (number? c) {:temperature (vec (repeat 3 (double c)))}
       (and (sequential? c) (= 3 (count c)) (every? number? c)) {:temperature (mapv double c)}
       (and (map? c) (some #(contains? c %) [:temperature :temperature-by-options :thinking :direct]))
-      (reduce (fn [c mode] (cond-> c (get-in c [mode :temperature]) (update-in [mode :temperature] #(mapv double %))))
+      (reduce (fn [c mode]
+                (cond-> c
+                  (get-in c [mode :temperature]) (update-in [mode :temperature] #(mapv double %))
+                  (get-in c [mode :by-budget])
+                  (update-in [mode :by-budget]
+                             (fn [bb] (into (sorted-map)
+                                            (map (fn [[b m]] [(long b) (cond-> m (:temperature m) (update :temperature #(mapv double %)))]))
+                                            bb)))))
               (update c :temperature #(if % (mapv double %) [1.0 1.0 1.0]))
               [:thinking :direct])
       :else (throw (ex-info (str "thinker :calibration " (pr-str c) " is not a temperature, three of them, a calibration map (per mode under :thinking / :direct) or its file")
@@ -116,7 +131,10 @@
                        :count-tokens (fn [text] (llm/count-tokens m text))
                        ;; the router calls this when it evicts or unloads the thinker
                        :close (fn [_] (llm/free! m))}))]
-    (merge {:kind :thinker :name (or (:name cfg) "thinker") :cfg cfg} backing)))
+    (merge {:kind :thinker :name (or (:name cfg) "thinker") :cfg cfg
+            ;; the last readout times, which the deadline's reserve is learned from
+            :read-times (atom [])}
+           backing)))
 
 (defn thinker
   "A thinker agent from its config ({:name :model (a GGUF path) :thinking
@@ -374,31 +392,46 @@
 
 (defn calibrate
   "The answer's distribution from its option scores in answer order:
-  softmax(scores / T), T the thinker's calibration for the call's mode
-  (thinking or direct), the question's type and its option count."
-  [cfg thinking? q logits]
-  (let [cal (ag/mode-calibration (or (:calibration cfg) (:calibration defaults)) (if thinking? :thinking :direct))
+  softmax(scores / T), T the thinker's calibration for how the answer was
+  read (`read`: nil answering directly, else the thought's budget, the
+  tokens it had when a deadline cut it), the question's type and its
+  option count."
+  [cfg read q logits]
+  (let [c (or (:calibration cfg) (:calibration defaults))
+        cal (if read (ag/mode-calibration c :thinking read) (ag/mode-calibration c :direct))
         T (ag/temperature-for cal (seq/qtypes (:t q)) (count logits))]
     (llm/softmax (mapv #(/ (double %) T) logits))))
 
 (defn- ask
-  "One question through the model: its prompt, options and the scoring."
-  [{:keys [cfg decide count-tokens] :as t} state q thinking?]
+  "One question through the model: its prompt, options and the scoring.
+  `how`: {:thinking? :think-max (the budget) :deadline-ms :reserve-ms
+  :cuts (budgets below think-max read from the same thought)}. :read is
+  what the answer's temperature is chosen by (calibrate)."
+  [{:keys [cfg decide count-tokens] :as t} state q {:keys [thinking? think-max deadline-ms reserve-ms cuts]}]
   (let [prompt (chat cfg (messages cfg state q (escaper t) nil) thinking?)
         ids (answer-ids cfg (escaper t) q)
-        think-max (if thinking? (:max-think-tokens cfg) 0)
-        {:keys [logp thought tokens]} (decide prompt ids
-                                              {:think-max think-max
-                                               :think-end (:think-end (tmpl cfg))
-                                               :answer-prefix (answer-prefix cfg)
-                                               :answer-end (answer-end cfg)
-                                               :temperature (:temperature cfg) :top-p (:top-p cfg)
-                                               :min-p (:min-p cfg) :seed (:seed cfg)})]
-    {:logits (answer-order cfg q logp)
-     :k (count ids)
-     :thought thought
-     :thought-tokens tokens
-     :prompt-tokens (count-tokens prompt)}))
+        think-max (if thinking? (or think-max (:max-think-tokens cfg)) 0)
+        {:keys [logp thought tokens close] :as r}
+        (decide prompt ids
+                (cond-> {:think-max think-max
+                         :think-end (:think-end (tmpl cfg))
+                         :answer-prefix (answer-prefix cfg)
+                         :answer-end (answer-end cfg)
+                         :temperature (:temperature cfg) :top-p (:top-p cfg)
+                         :min-p (:min-p cfg) :seed (:seed cfg)}
+                  deadline-ms (assoc :deadline-ms deadline-ms :reserve-ms reserve-ms)
+                  (seq cuts) (assoc :cuts cuts)))]
+    (when (and thinking? (:read-ms r))
+      (swap! (:read-times t) #(vec (take-last 64 (conj % (:read-ms r))))))
+    (cond-> {:logits (answer-order cfg q logp)
+             :k (count ids)
+             :thought thought
+             :thought-tokens tokens
+             :prompt-tokens (count-tokens prompt)
+             :read (when thinking? (if (= :deadline close) tokens think-max))
+             :close close
+             :timings (select-keys r [:prefill-ms :think-ms :read-ms])}
+      (seq (:cuts r)) (assoc :cuts (mapv #(update % :logp (fn [lp] (answer-order cfg q lp))) (:cuts r))))))
 
 (def ^:private state-mark "\u001f<<lev-state>>\u001f")
 
@@ -495,7 +528,7 @@
 
 (defn- answer-map
   "The Jev answer map for one state's asked questions."
-  [{:keys [cfg name]} {:keys [prepared cs]} asked thinking? {:keys [on-infeasible thought]}]
+  [{:keys [name]} {:keys [prepared cs]} asked {:keys [thinking? think-max deadline-ms]} {:keys [on-infeasible thought]}]
   (let [solution (when cs
                    (ag/decide-constraints cs (map (fn [{:keys [qid q]} {:keys [p]}] [qid q p]) prepared asked)
                                           on-infeasible))
@@ -510,9 +543,14 @@
               ["answers" answers]
               ["usage" (array-map "input_tokens" (reduce + (map :prompt-tokens asked))
                                   "output_tokens" out-tokens)]
-              ["thinking" (array-map "enabled" thinking?
-                                     "tokens" out-tokens
-                                     "max_tokens" (if thinking? (:max-think-tokens cfg) 0))]]
+              ["thinking" (let [closes (frequencies (keep :close asked))]
+                            (seq/ordered-map
+                             (concat [["enabled" thinking?]
+                                      ["tokens" out-tokens]
+                                      ["max_tokens" think-max]]
+                                     (when deadline-ms [["deadline_ms" deadline-ms]])
+                                     (when (seq closes)
+                                       [["closes" (into (sorted-map) (map (fn [[k n]] [(clojure.core/name k) n])) closes)]]))))]]
              (when solution [["constraints" (ag/constraints-report cs solution)]])))))
 
 (defn- call-thinking
@@ -521,31 +559,94 @@
   [cfg thinking]
   (and (thinks? cfg) (if (some? thinking) (boolean thinking) (boolean (:thinking cfg)))))
 
+(defn- refuse [field msg]
+  (throw (ex-info msg {:type :invalid-request :field field})))
+
+(defn- plan
+  "How a call thinks: {:thinking? :think-max :deadline-ms}. A :think-budget
+  (0 to :max-think-tokens) decides on its own, 0 answering directly; a
+  deadline (the call's :think-deadline-ms, else the thinker's; 0 for
+  none) applies only to a call that thinks."
+  [cfg {:keys [thinking think-budget] :as opts}]
+  (let [cap (or (:max-think-tokens cfg) (:max-think-tokens defaults))]
+    (when (some? think-budget)
+      (cond
+        (not (and (integer? think-budget) (<= 0 think-budget cap)))
+        (refuse "think_budget" (str "think_budget must be an integer from 0 to " cap " (this thinker's max-think-tokens)"))
+        (and (pos? think-budget) (not (thinks? cfg)))
+        (refuse "think_budget" (str (or (:name cfg) "this thinker") " cannot think: it has no thinking mode"))
+        (and (pos? think-budget) (false? thinking))
+        (refuse "think_budget" "a positive think_budget asks for thinking, which thinking false turns off")))
+    (let [thinking? (if (some? think-budget) (pos? think-budget) (call-thinking cfg thinking))
+          d (if (contains? opts :think-deadline-ms) (:think-deadline-ms opts) (:think-deadline-ms cfg))]
+      (when (and (some? d) (not (and (number? d) (<= 0 d))))
+        (refuse "think_deadline_ms" "think_deadline_ms must be a number of milliseconds, 0 or more"))
+      {:thinking? thinking?
+       :think-max (if thinking? (or (when (pos? (or think-budget 0)) think-budget) cap) 0)
+       :deadline-ms (when (and thinking? d (pos? d)) d)})))
+
+(defn- reserve-ms
+  "The time a deadline keeps back for the readout: the thinker's fixed one,
+  else 1.5 x the p95 of its last readouts + 10 ms (at least 20) once 8
+  are seen, else 100 ms."
+  [{:keys [cfg read-times]}]
+  (or (:think-deadline-reserve-ms cfg)
+      (let [xs (some-> read-times deref)]
+        (if (< (count xs) 8)
+          100.0
+          (let [v (vec (sort xs))
+                p95 (nth v (min (dec (count v)) (int (Math/ceil (* 0.95 (dec (count v)))))))]
+            (max 20.0 (+ 10.0 (* 1.5 p95))))))))
+
+(defn- now-ms [] (/ (System/nanoTime) 1e6))
+
+(defn- ask-thinking
+  "Every state's questions thought through one by one; under a deadline
+  each gets the time left over the questions left, and one whose share
+  is below the readout reserve is answered directly (closed :fallback)."
+  [t states qs {:keys [think-max deadline-ms]}]
+  (let [t0 (now-ms)
+        n (* (count states) (count qs))
+        i (volatile! 0)
+        ask1 (fn [state q]
+               (let [left (- n @i)
+                     _ (vswap! i inc)]
+                 (if-not deadline-ms
+                   (ask t state q {:thinking? true :think-max think-max})
+                   (let [share (/ (- deadline-ms (- (now-ms) t0)) left)
+                         reserve (reserve-ms t)]
+                     (if (< share reserve)
+                       (assoc (ask t state q {:thinking? false}) :close :fallback)
+                       (ask t state q {:thinking? true :think-max think-max :deadline-ms share :reserve-ms reserve}))))))]
+    (mapv (fn [state] (mapv #(ask1 state %) qs)) states)))
+
 (defn- ask-states
   "Per state, the asked questions' raw scores: one Jev-mode call for them
   all when the call does not think, else question by question."
-  [{:keys [cfg] :as t} states qs thinking?]
-  (if (and (not thinking?) (:jev cfg) (:jev t) (seq qs) (seq states)
-           ;; the engine's contexts are never empty: an empty state asks
-           ;; question by question
-           (not-any? #(str/blank? (state-text cfg (escaper t) %)) states))
+  [{:keys [cfg] :as t} states qs {:keys [thinking?] :as how}]
+  (cond
+    thinking? (ask-thinking t states qs how)
+    (and (:jev cfg) (:jev t) (seq qs) (seq states)
+         ;; the engine's contexts are never empty: an empty state asks
+         ;; question by question
+         (not-any? #(str/blank? (state-text cfg (escaper t) %)) states))
     (ask-all t states qs)
-    (mapv (fn [state] (mapv #(ask t state % thinking?) qs)) states)))
+    :else (mapv (fn [state] (mapv #(ask t state % {:thinking? false}) qs)) states)))
 
 (defmethod ag/system-one-batch* :thinker
-  [{:keys [cfg] :as t} states questions {:keys [constraints thinking] :as opts}]
-  (let [thinking? (call-thinking cfg thinking)
+  [{:keys [cfg] :as t} states questions {:keys [constraints] :as opts}]
+  (let [how (plan cfg opts)
         {:keys [prepared] :as p} (prepare questions constraints)
         qs (mapv :q prepared)
-        asked (mapv (fn [per-state] (mapv (fn [q a] (assoc a :p (calibrate cfg thinking? q (:logits a)))) qs per-state))
-                    (ask-states t states qs thinking?))]
-    (mapv #(answer-map t p % thinking? opts) asked)))
+        asked (mapv (fn [per-state] (mapv (fn [q a] (assoc a :p (calibrate cfg (:read a) q (:logits a)))) qs per-state))
+                    (ask-states t states qs how))]
+    (mapv #(answer-map t p % how opts) asked)))
 
 (defmethod ag/forward :thinker
   [{:keys [cfg] :as t} state questions]
   (let [{:keys [prepared]} (prepare questions nil)
         qs (mapv :q prepared)
-        asked (first (ask-states t [state] qs (call-thinking cfg nil)))]
+        asked (first (ask-states t [state] qs (plan cfg nil)))]
     (mapv (fn [{:keys [q] :as pq} {:keys [logits k prompt-tokens]}]
             (assoc pq :qtype (seq/qtypes (:t q)) :k k :logits logits :tokens prompt-tokens))
           prepared asked)))
@@ -554,9 +655,49 @@
   [t state questions opts]
   (first (ag/system-one-batch* t [state] questions opts)))
 
+(defn sweep
+  "Every budget's answer to each question from one thought: the question
+  asked directly for budget 0, and thought through once at the largest
+  budget with the answer also read where the thought reached each smaller
+  one (lev.llm/decide's cuts; under greedy decoding exactly what that
+  budget would answer). Per question {:qid :q :qtype :k :budgets {budget
+  {:logits (raw, answer order) :tokens :ms (modelled: prefill + the
+  thought to the cut + its readout) :close}}}, for bench/ and
+  lev.calibrate."
+  [{:keys [cfg] :as t} state questions budgets]
+  (let [{:keys [prepared]} (prepare questions nil)
+        budgets (vec (sort (distinct budgets)))
+        top (peek budgets)
+        cuts (filterv #(< 0 % top) budgets)
+        total (fn [{:keys [prefill-ms think-ms read-ms]}] (+ (or prefill-ms 0.0) (or think-ms 0.0) (or read-ms 0.0)))]
+    (when (and (pos? top) (not (thinks? cfg)))
+      (refuse "think_budget" (str (or (:name cfg) "this thinker") " cannot think: it has no thinking mode")))
+    (mapv (fn [{:keys [q] :as pq}]
+            (let [direct (when (zero? (first budgets)) (ask t state q {:thinking? false}))
+                  thought (when (pos? top) (ask t state q {:thinking? true :think-max top :cuts cuts}))
+                  made (:thought-tokens thought)
+                  timings (:timings thought)]
+              (assoc pq
+                     :qtype (seq/qtypes (:t q))
+                     :k (:k (or direct thought))
+                     :budgets (into (sorted-map)
+                                    (concat
+                                     (when direct [[0 {:logits (:logits direct) :tokens 0 :ms (total (:timings direct)) :close nil}]])
+                                     (map (fn [{:keys [at logp think-ms read-ms]}]
+                                            [at (if think-ms
+                                                  {:logits logp :tokens at :close :budget
+                                                   :ms (+ (or (:prefill-ms timings) 0.0) think-ms read-ms)}
+                                                  {:logits logp :tokens made :close (:close thought) :ms (total timings)})])
+                                          (:cuts thought))
+                                     (when thought [[top {:logits (:logits thought) :tokens made :close (:close thought)
+                                                          :ms (total timings)}]]))))))
+          prepared)))
+
 (defn system-one
   "state + {qid -> qdef} -> the answer map, from a thinker. opts: those of
-  lev.agent/system-one plus :thinking (override the thinker's default)
-  and :thought (true: each answer carries the model's thought text)."
+  lev.agent/system-one plus :thinking (override the thinker's default),
+  :think-budget (the most thought tokens, 0 to answer directly),
+  :think-deadline-ms (the wall time the call's thoughts share) and
+  :thought (true: each answer carries the model's thought text)."
   [thinker state questions opts]
   (ag/system-one* thinker state questions opts))

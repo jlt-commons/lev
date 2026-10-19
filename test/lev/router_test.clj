@@ -197,7 +197,14 @@
         (is (= ["true" "false"] (first @seen)))
         (is (= 0 (:think-max (second @seen))))
         (is (= "t" (get out "model")))
-        (is (= "t" (get-in out ["routing" "model"])))))))
+        (is (= "t" (get-in out ["routing" "model"])))
+        (testing "and :think-budget / :think-deadline-ms, alone and in a batch"
+          (router/predict r2 "s" {"q" {"type" "noul" "instructions" "?"}} :model "t" :thinking true
+                          :think-budget 48 :think-deadline-ms 60000)
+          (is (= 48 (:think-max (second @seen))))
+          (is (< 50000 (:deadline-ms (second @seen)) 60001))
+          (router/predict-batch r2 ["a" "b"] {"q" {"type" "noul" "instructions" "?"}} :model "t" :think-budget 0)
+          (is (= 0 (:think-max (second @seen)))))))))
 
 (deftest a-router-works-with-only-encoders-only-thinkers-or-both
   (let [thinker (fn [name cfg] {:kind :thinker :name name :cfg cfg

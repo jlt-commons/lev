@@ -121,6 +121,40 @@
       (spit "target/mode-cal.edn" (pr-str {:thinking {:temperature [3.0 3.0 3.0]}}))
       (is (= {:thinking {:temperature [3.0 3.0 3.0]}} (cal/load-calibration "target/mode-cal.edn"))))))
 
+(deftest a-thinker-is-fit-per-budget-from-one-thought
+  (let [calls (atom [])
+        ;; the longer it thinks, the surer it is of the right answer (index 1)
+        sure (fn [k] [-1.0 (- (/ k 64.0) 1.0) -2.0])
+        t (think/thinker {:name "fake" :thinking true :jev false :max-think-tokens 256}
+                         {:decide (fn [_ options opts]
+                                    (swap! calls conj (select-keys opts [:think-max :cuts]))
+                                    (let [n (count options) cut (fn [k] (subvec (sure k) 0 n))]
+                                      {:logp (cut (:think-max opts)) :thought "" :tokens (:think-max opts) :close :budget
+                                       :prefill-ms 1.0 :think-ms 10.0 :read-ms 2.0
+                                       :cuts (mapv (fn [k] {:at k :logp (cut k) :think-ms 5.0 :read-ms 2.0}) (:cuts opts))}))
+                          :count-tokens (constantly 1)})
+        cases (vec (for [i (range 6)]
+                     {"state" (str "case " i)
+                      "questions" {"team" {"type" "choice" "instructions" "Which team?" "criteria" {"a" nil "b" nil "c" nil}}}
+                      "labels" {"team" (if (= i 5) "a" "b")}}))
+        by-budget (cal/collect-sweep t cases [0 64 256])]
+    (testing "one direct ask and one thought per question, cut at the smaller budgets"
+      (is (= (take 2 @calls) [{:think-max 0} {:think-max 256 :cuts [64]}]))
+      (is (= 12 (count @calls))))
+    (testing "items per budget, each with that budget's scores"
+      (is (= [0 64 256] (keys by-budget)))
+      (is (every? #(= 6 (count %)) (vals by-budget)))
+      (is (= [-1.0 0.0 -2.0] (:logits (first (get by-budget 64))))))
+    (testing "the fit: direct for budget 0, the thinking ones per budget, the smallest as the thinking base"
+      (let [c (cal/sweep-calibration by-budget)]
+        (is (= #{:direct :thinking} (set (keys c))))
+        (is (= [64 256] (keys (get-in c [:thinking :by-budget]))))
+        (is (= (get-in c [:thinking :temperature]) (get-in c [:thinking :by-budget 64 :temperature])))
+        (is (not= (get-in c [:thinking :by-budget 64 :temperature]) (get-in c [:thinking :by-budget 256 :temperature])))
+        (let [refit (ag/with-calibration t c)]
+          (is (= (get-in c [:thinking :by-budget 256 :temperature-by-options])
+                 (:temperature-by-options (ag/calibration-of refit :thinking 300)))))))))
+
 (deftest a-gold-distribution-is-fit-by-cross-entropy
   (testing "the NLL of an item with a target is its cross-entropy"
     (let [item {:logits [2.0 0.0] :label 0 :target [0.6 0.4]}
