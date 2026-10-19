@@ -94,6 +94,33 @@
              (get-in (think/system-one t "Refund me." {"churn" (get-in (first cases) ["questions" "churn"])} nil)
                      ["answers" "churn" "confidence"]))))))
 
+(deftest a-thinker-is-fit-in-the-mode-it-is-asked-in
+  (let [calls (atom [])
+        t (think/thinker {:name "fake" :thinking true :jev false}
+                         {:decide (fn [_ options opts]
+                                    (swap! calls conj (:think-max opts))
+                                    {:logp (vec (map-indexed (fn [i _] (- (* 2.0 i))) options)) :thought "" :tokens 0})
+                          :count-tokens (constantly 1)})
+        cases [{"state" "Refund me before Friday or we cancel."
+                "questions" {"churn" {"type" "noul" "instructions" "Does the customer threaten to leave?"}}
+                "labels" {"churn" false}}]]
+    (testing "the mode is the thinker's default unless asked"
+      (is (= :thinking (cal/mode t)))
+      (is (= :direct (cal/mode (cal/in-mode t false))))
+      (is (nil? (cal/mode {:kind :encoder :cfg {}})) "an encoder has no modes"))
+    (testing "collected direct, the thinker does not think"
+      (cal/collect (cal/in-mode t false) cases)
+      (is (= [0] @calls)))
+    (testing "the fit lands under the mode, which with-calibration then applies there"
+      (let [fitted (cal/for-agent (cal/in-mode t false) {:temperature [2.0 1.0 1.0]})]
+        (is (= {:direct {:temperature [2.0 1.0 1.0]}} fitted))
+        (is (= [2.0 1.0 1.0] (:temperature (ag/calibration-of (ag/with-calibration t fitted) :direct))))
+        (is (= [1.0 1.0 1.0] (:temperature (ag/calibration-of (ag/with-calibration t fitted) :thinking))))
+        (is (= {:temperature [2.0 1.0 1.0]} (cal/for-agent {:kind :encoder :cfg {}} {:temperature [2.0 1.0 1.0]})) "an encoder's stays flat")))
+    (testing "a mode-keyed file is a calibration file"
+      (spit "target/mode-cal.edn" (pr-str {:thinking {:temperature [3.0 3.0 3.0]}}))
+      (is (= {:thinking {:temperature [3.0 3.0 3.0]}} (cal/load-calibration "target/mode-cal.edn"))))))
+
 (deftest a-gold-distribution-is-fit-by-cross-entropy
   (testing "the NLL of an item with a target is its cross-entropy"
     (let [item {:logits [2.0 0.0] :label 0 :target [0.6 0.4]}

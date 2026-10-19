@@ -307,6 +307,33 @@
     (is (thrown-with-msg? Exception #"calibration file x does not exist" (cal "x")))
     (is (thrown-with-msg? Exception #"calibration" (cal [1 2])))))
 
+(deftest a-calibration-can-differ-by-thinking-mode
+  (let [cal {:temperature [1.0 1.0 1.0]
+             :thinking {:temperature [4.0 4.0 4.0]}
+             :direct {:temperature [0.5 0.5 0.5] :temperature-by-options {"choice:3-5" 2.0}}}
+        t (fake-thinker (atom []) scores)
+        t (assoc-in t [:cfg :calibration] (:calibration (:cfg (think/thinker {:calibration cal} {:decide (constantly nil)}))))
+        probs (fn [thinking qid] (get-in (think/system-one t state questions {:thinking thinking}) ["answers" qid "probabilities"]))]
+    (testing "thinking answers at the thinking temperatures"
+      (is (every? true? (map close? (vals (probs true "department")) (softmax-at [-0.1 -3.0 -4.0] 4.0)))))
+    (testing "direct answers at the direct ones, a bucket over its type"
+      (is (every? true? (map close? (vals (probs false "department")) (softmax-at [-0.1 -3.0 -4.0] 2.0))))
+      (is (every? true? (map close? (vals (probs false "urgency")) (softmax-at [-2.0 -0.5 -1.5] 0.5))))))
+  (testing "a mode without its own map takes the flat temperatures, bucket by bucket under the mode's"
+    (is (= {:temperature [2.0 2.0 2.0]} (ag/mode-calibration {:temperature [2.0 2.0 2.0] :direct {:temperature [1.0 1.0 1.0]}} :thinking)))
+    (is (= {:temperature [2.0 2.0 2.0] :temperature-by-options {"noul:2" 3.0 "choice:2" 5.0}}
+           (ag/mode-calibration {:temperature [2.0 2.0 2.0] :temperature-by-options {"noul:2" 9.0 "choice:2" 5.0}
+                                 :direct {:temperature-by-options {"noul:2" 3.0}}}
+                                :direct))))
+  (testing "a mode-only calibration is a calibration"
+    (is (= {:temperature [1.0 1.0 1.0] :direct {:temperature [0.7 0.7 0.7]}}
+           (:calibration (:cfg (think/thinker {:calibration {:direct {:temperature [0.7 0.7 0.7]}}} {:decide (constantly nil)}))))))
+  (testing "with-calibration puts a mode's fit under that mode"
+    (let [t (ag/with-calibration (think/thinker {} {:decide (constantly nil)})
+                                 {:thinking {:temperature [3.0 3.0 3.0] :temperature-by-options {"noul:2" 6.0}}})]
+      (is (= {:temperature [1.0 1.0 1.0]} (ag/calibration-of t :direct)))
+      (is (= {:temperature [3.0 3.0 3.0] :temperature-by-options {"noul:2" 6.0}} (ag/calibration-of t :thinking))))))
+
 (deftest with-calibration-sets-a-thinkers-temperatures-not-its-sampling
   (let [t (ag/with-calibration (think/thinker {:temperature 0.0} {:decide (constantly nil)})
                                {:temperature [3.0 3.0 3.0] :temperature-by-options {"choice:3-5" 5.0}})]

@@ -96,9 +96,11 @@
       (nil? c) {:temperature [1.0 1.0 1.0]}
       (number? c) {:temperature (vec (repeat 3 (double c)))}
       (and (sequential? c) (= 3 (count c)) (every? number? c)) {:temperature (mapv double c)}
-      (and (map? c) (or (:temperature c) (:temperature-by-options c)))
-      (update c :temperature #(if % (mapv double %) [1.0 1.0 1.0]))
-      :else (throw (ex-info (str "thinker :calibration " (pr-str c) " is not a temperature, three of them, a calibration map or its file")
+      (and (map? c) (some #(contains? c %) [:temperature :temperature-by-options :thinking :direct]))
+      (reduce (fn [c mode] (cond-> c (get-in c [mode :temperature]) (update-in [mode :temperature] #(mapv double %))))
+              (update c :temperature #(if % (mapv double %) [1.0 1.0 1.0]))
+              [:thinking :direct])
+      :else (throw (ex-info (str "thinker :calibration " (pr-str c) " is not a temperature, three of them, a calibration map (per mode under :thinking / :direct) or its file")
                             {:type :invalid-config :calibration c})))))
 
 (defn- thinker* [cfg backing]
@@ -372,10 +374,11 @@
 
 (defn calibrate
   "The answer's distribution from its option scores in answer order:
-  softmax(scores / T), T the thinker's calibration for the question's
-  type and option count."
-  [cfg q logits]
-  (let [T (ag/temperature-for (or (:calibration cfg) (:calibration defaults)) (seq/qtypes (:t q)) (count logits))]
+  softmax(scores / T), T the thinker's calibration for the call's mode
+  (thinking or direct), the question's type and its option count."
+  [cfg thinking? q logits]
+  (let [cal (ag/mode-calibration (or (:calibration cfg) (:calibration defaults)) (if thinking? :thinking :direct))
+        T (ag/temperature-for cal (seq/qtypes (:t q)) (count logits))]
     (llm/softmax (mapv #(/ (double %) T) logits))))
 
 (defn- ask
@@ -534,7 +537,7 @@
   (let [thinking? (call-thinking cfg thinking)
         {:keys [prepared] :as p} (prepare questions constraints)
         qs (mapv :q prepared)
-        asked (mapv (fn [per-state] (mapv (fn [q a] (assoc a :p (calibrate cfg q (:logits a)))) qs per-state))
+        asked (mapv (fn [per-state] (mapv (fn [q a] (assoc a :p (calibrate cfg thinking? q (:logits a)))) qs per-state))
                     (ask-states t states qs thinking?))]
     (mapv #(answer-map t p % thinking? opts) asked)))
 

@@ -278,20 +278,41 @@
   [agent]
   (if (#{:thinker :clef :tinydecide} (:kind agent)) [:cfg :calibration] [:cfg]))
 
+(defn mode-calibration
+  "A thinker calibration's temperatures for one mode (:thinking or :direct):
+  the mode's own map over the flat temperatures, bucket by bucket; the
+  flat ones when the mode has none. Thinking and answering directly are
+  different readouts and want different temperatures (Callosum measured
+  T 1.91 direct and 3.17 after a 1024-token thought on its models), so
+  `lev.calibrate` fits each mode on its own."
+  [cal mode]
+  (let [flat (dissoc cal :thinking :direct)]
+    (if-let [m (get cal mode)]
+      (cond-> (assoc flat :temperature (vec (or (:temperature m) (:temperature flat))))
+        (or (:temperature-by-options flat) (:temperature-by-options m))
+        (assoc :temperature-by-options (merge (:temperature-by-options flat) (:temperature-by-options m))))
+      flat)))
+
 (defn calibration-of
-  "The agent's {:temperature [per type] :temperature-by-options {bucket T}}."
-  [agent]
-  (get-in agent (calibration-path agent)))
+  "The agent's {:temperature [per type] :temperature-by-options {bucket T}};
+  with a mode, a thinker's for that mode (mode-calibration)."
+  ([agent] (get-in agent (calibration-path agent)))
+  ([agent mode] (mode-calibration (calibration-of agent) mode)))
 
 (defn with-calibration
   "The agent with refitted temperatures (lev.calibrate's {:temperature
-  [per type] :temperature-by-options {bucket T}}) over its own, bucket by
-  bucket."
-  [agent {:keys [temperature temperature-by-options]}]
-  (let [path (calibration-path agent)]
-    (cond-> agent
-      temperature (assoc-in (conj path :temperature) (vec temperature))
-      temperature-by-options (update-in (conj path :temperature-by-options) merge temperature-by-options))))
+  [per type] :temperature-by-options {bucket T}}, a thinker's possibly
+  under :thinking / :direct) over its own, bucket by bucket."
+  [agent cal]
+  (let [path (calibration-path agent)
+        apply-at (fn [agent at {:keys [temperature temperature-by-options]}]
+                   (cond-> agent
+                     temperature (assoc-in (conj at :temperature) (vec temperature))
+                     temperature-by-options (update-in (conj at :temperature-by-options) merge temperature-by-options)))]
+    (reduce (fn [agent mode]
+              (if-let [m (get cal mode)] (apply-at agent (conj path mode) m) agent))
+            (apply-at agent path cal)
+            [:thinking :direct])))
 
 (defn temperature-for
   "The calibration temperature for a question type and option count: the

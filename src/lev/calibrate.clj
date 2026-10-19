@@ -24,13 +24,16 @@
   :temperature [per type]}; `evaluate` reports NLL, ECE and accuracy per
   bucket before and after.
 
-    jolt -M:calibrate --labels cases.jsonl --out calibration.edn [--data DIR] [--model NAME] [--all]
+    jolt -M:calibrate --labels cases.jsonl --out calibration.edn [--data DIR] [--model NAME] [--all] [--thinking true|false]
 
   and then config.edn :calibration {\"english\" \"calibration.edn\"} (or
   --calibration PATH) loads it over the checkpoint's own; a thinker's
   (--model qwen3.5-4b) goes under its name the same way, or inline as its
-  :calibration."
+  :calibration. A thinker thinking and the same thinker answering directly
+  are two readouts with their own temperatures: each is fit in its mode
+  (--thinking) and kept under :thinking / :direct in the one file."
   (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [lev.agent :as ag]
             [lev.config :as cfg]
@@ -152,14 +155,33 @@
      :temperature (mapv (fn [qtype] (if-let [xs (get by-type qtype)] (fit-temperature xs) 1.0)) [0 1 2])
      :counts (into (sorted-map) (map (fn [[b xs]] [b (count xs)])) by-bucket)}))
 
+(defn mode
+  "The mode a thinker answers in when nothing asks otherwise (:thinking or
+  :direct), which is the mode `collect` fits; nil for an encoder."
+  [agent]
+  (when (= :thinker (:kind agent))
+    (if (and (not (false? (get-in agent [:cfg :thinks]))) (get-in agent [:cfg :thinking])) :thinking :direct)))
+
+(defn in-mode
+  "The thinker set to answer thinking (true) or directly (false) by default."
+  [agent thinking?]
+  (assoc-in agent [:cfg :thinking] (boolean thinking?)))
+
+(defn for-agent
+  "A fitted calibration as the agent loads it: a thinker's under the mode
+  it was fitted in, an encoder's as it is."
+  [agent fitted]
+  (if-let [m (mode agent)] {m fitted} fitted))
+
 (defn evaluate
   "Per bucket: n, accuracy, and NLL / ECE under the agent's own
-  temperature and under the calibration's."
+  temperature (a thinker's for the mode it answers in) and under the
+  calibration's."
   [agent items cal]
   (into (sorted-map)
         (map (fn [[b xs]]
                (let [{:keys [qtype k]} (first xs)
-                     before (ag/temperature-for (ag/calibration-of agent) qtype k)
+                     before (ag/temperature-for (if-let [m (mode agent)] (ag/calibration-of agent m) (ag/calibration-of agent)) qtype k)
                      after (get-in cal [:temperature-by-options b] before)]
                  [b {:n (count xs) :accuracy (accuracy xs)
                      :before {:t before :nll (nll xs before) :ece (ece xs before)}
@@ -175,18 +197,21 @@
       (mapv json/read-str (remove str/blank? (str/split-lines text))))))
 
 (defn load-calibration
-  "A calibration file (EDN with :temperature-by-options / :temperature)."
+  "A calibration file (EDN with :temperature-by-options / :temperature, a
+  thinker's possibly per mode under :thinking / :direct)."
   [path]
   (let [m (edn/read-string (slurp path))]
-    (when-not (and (map? m) (or (:temperature-by-options m) (:temperature m)))
+    (when-not (and (map? m) (some #(contains? m %) [:temperature-by-options :temperature :thinking :direct]))
       (throw (ex-info (str path " is not a calibration file") {:type :invalid-request :file path})))
     m))
 
 (defn -main
-  "jolt -M:calibrate --labels cases.jsonl --out calibration.edn [--data DIR] [--model NAME] [--all]
+  "jolt -M:calibrate --labels cases.jsonl --out calibration.edn [--data DIR] [--model NAME] [--all] [--thinking true|false]
    Fits on the even-numbered cases and reports on the odd ones held out
    (--all fits on every case), prints the per-bucket report, writes the
-   calibration."
+   calibration. A thinker is fit in the mode it answers in by default, or
+   the one --thinking names, and its fit is written under that mode
+   (:thinking / :direct), next to the other mode's when --out has one."
   [& args]
   (let [opts (cfg/parse-args args)
         ctx (cfg/context opts)
@@ -199,14 +224,15 @@
                                 :thinkers (cfg/thinkers ctx)
                                 :checkpoints (into {} (map (fn [n] [n (cfg/limits ctx n)])) router/names)
                                 :calibrations (cfg/calibrations ctx)})
-        agent (router/load-model rt model)
+        agent (cond-> (router/load-model rt model)
+                (contains? opts "--thinking") (in-mode (not= "false" (str (get opts "--thinking")))))
         cases (vec (read-cases labels))
         [fit-cases held] (if all?
                            [cases []]
                            [(vec (keep-indexed (fn [i c] (when (even? i) c)) cases))
                             (vec (keep-indexed (fn [i c] (when (odd? i) c)) cases))])
-        _ (println (format "%s: %d cases to fit on%s" model (count fit-cases)
-                           (if (seq held) (format ", %d held out" (count held)) "")))
+        _ (println (format "%s%s: %d cases to fit on%s" model (if-let [m (mode agent)] (str " (" (name m) ")") "")
+                           (count fit-cases) (if (seq held) (format ", %d held out" (count held)) "")))
         ;; each case is run once: a thinker takes seconds a state
         fit-items (collect agent fit-cases)
         fitted (calibration fit-items)
@@ -218,5 +244,7 @@
                                     b n (* 100 accuracy) (:t before) (:nll before) (:ece before) (:t after) (:nll after) (:ece after)))))]
     (report "fitted cases:" fit-items)
     (when (seq held) (report "held-out cases:" (collect agent held)))
-    (spit out (pr-str (dissoc fitted :counts)))
+    ;; a thinker's file keeps the other mode's fit when it has one
+    (spit out (pr-str (merge (when (and (mode agent) (.exists (io/file out))) (load-calibration out))
+                             (for-agent agent (dissoc fitted :counts)))))
     (println "wrote" out)))
