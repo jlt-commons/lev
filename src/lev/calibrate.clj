@@ -76,9 +76,10 @@
 
 (defn- case-items
   "One item per labeled question of case `c`, from `answer` (state, the
-  asked questions -> rows {:qid :q :qtype :k :logits ...}); each item
+  asked questions -> rows {:qid :q :qtype :k :logits ...}), bucketed by
+  the agent's calibration's own :buckets when it has them; each item
   keeps its row under :row."
-  [c answer]
+  [c answer buckets]
   (let [labels (qget c :labels)
         targets (qget c :targets)
         questions (qget c :questions)
@@ -91,7 +92,7 @@
                (when (and target (not= k (count target)))
                  (throw (ex-info (str "target for " (pr-str qid) ": " (count target) " probabilities for " k " options")
                                  {:type :invalid-label :qid qid})))
-               (cond-> {:bucket (seq/temp-bucket qtype k) :type (:t q) :qtype qtype :k k
+               (cond-> {:bucket (seq/temp-bucket qtype k buckets) :type (:t q) :qtype qtype :k k
                         :logits logits :label (label-index qid q label) :row row}
                  target (assoc :target (mapv double target)))))
            (answer (qget c :state) asked)))))
@@ -102,14 +103,14 @@
   :label}, plus :target with the case's gold distribution for it.
   Questions without a label are skipped."
   [agent cases]
-  (vec (mapcat (fn [c] (map #(dissoc % :row) (case-items c #(ag/forward agent %1 %2)))) cases)))
+  (vec (mapcat (fn [c] (map #(dissoc % :row) (case-items c #(ag/forward agent %1 %2) (:buckets (ag/calibration-of agent))))) cases)))
 
 (defn collect-sweep
   "A thinker over the cases at every budget from one thought per question
   (lev.think/sweep): {budget [item ...]}, the items as `collect`'s plus
   the budget's :tokens and modelled :ms."
   [agent cases budgets]
-  (let [items (vec (mapcat (fn [c] (case-items c #(think/sweep agent %1 %2 budgets))) cases))]
+  (let [items (vec (mapcat (fn [c] (case-items c #(think/sweep agent %1 %2 budgets) (:buckets (ag/calibration-of agent)))) cases))]
     (into (sorted-map)
           (map (fn [b]
                  [b (mapv (fn [{:keys [row] :as item}]

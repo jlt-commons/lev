@@ -94,6 +94,16 @@
              (get-in (think/system-one t "Refund me." {"churn" (get-in (first cases) ["questions" "churn"])} nil)
                      ["answers" "churn" "confidence"]))))))
 
+(deftest a-thinker-with-its-own-buckets-is-refit-in-them
+  (let [t (think/thinker {:name "fake" :thinking false :jev false
+                          :calibration {:temperature [1.0 1.0 1.0] :buckets ["2" "3-5" "6-16" "17-52"]}}
+                         {:decide (fn [_ options _] {:logp (vec (map-indexed (fn [i _] (- (* 2.0 i))) options)) :thought "" :tokens 0})
+                          :count-tokens (constantly 1)})
+        items (cal/collect t [{"state" "s"
+                               "questions" {"q" {"type" "choice" "instructions" "pick" "criteria" (mapv #(str "o" %) (range 12))}}
+                               "labels" {"q" "o3"}}])]
+    (is (= ["choice:6-16"] (map :bucket items)) "not lev's 11+")))
+
 (deftest a-thinker-is-fit-in-the-mode-it-is-asked-in
   (let [calls (atom [])
         t (think/thinker {:name "fake" :thinking true :jev false}

@@ -331,11 +331,12 @@
 
 (defn temperature-for
   "The calibration temperature for a question type and option count: the
-  (type, count-bucket) entry, else the type's. max(1e-3, T): a degenerate
+  (type, count-bucket) entry, else the type's; the buckets are the
+  calibration's :buckets when it has its own. max(1e-3, T): a degenerate
   fitted temperature saturates the softmax instead of dividing by zero."
   [cfg qtype k]
   (max 1e-3 (double (get (:temperature-by-options cfg)
-                         (seq/temp-bucket qtype k)
+                         (seq/temp-bucket qtype k (:buckets cfg))
                          (nth (:temperature cfg) qtype)))))
 
 (defn encoder-forward

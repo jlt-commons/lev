@@ -12,6 +12,7 @@
     lev.think-test
     lev.clef-test
     lev.tinydecide-test
+    lev.agentdecision-test
     lev.patterns-test
     lev.program-test
     lev.calibrate-test

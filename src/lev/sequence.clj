@@ -154,11 +154,24 @@
         [(str "false: " (if (no-description? f) "no, the statement does not hold" (render-criterion f)))
          (str "true: " (if (no-description? tr) "yes, the statement holds" (render-criterion tr)))]))))
 
+(defn- bucket-max
+  "The largest option count a bucket name (\"2\", \"3-5\", \"11+\") holds."
+  [b]
+  (cond (str/ends-with? b "+") Long/MAX_VALUE
+        (str/includes? b "-") (Long/parseLong (subs b (inc (str/index-of b "-"))))
+        :else (Long/parseLong b)))
+
 (defn temp-bucket
-  "Per-cardinality temperature key, e.g. \"choice:3-5\"."
-  [qtype k]
-  (let [size (if (<= k 2) "2" (if (<= k 5) "3-5" (if (<= k 10) "6-10" "11+")))]
-    (str (qtype-names qtype) ":" size)))
+  "Per-cardinality temperature key, e.g. \"choice:3-5\". `buckets`, the
+  names in ascending order, replaces lev's 2 / 3-5 / 6-10 / 11+ (a
+  calibration's own, AgentDecision's 2 / 3-5 / 6-16 / 17-52); a count past
+  the last is the last's."
+  ([qtype k] (temp-bucket qtype k nil))
+  ([qtype k buckets]
+   (let [size (if (seq buckets)
+                (or (some #(when (<= k (bucket-max %)) %) buckets) (peek (vec buckets)))
+                (if (<= k 2) "2" (if (<= k 5) "3-5" (if (<= k 10) "6-10" "11+"))))]
+     (str (qtype-names qtype) ":" size))))
 
 (defn build-prefix
   "The question-only prefix of a sequence, [ids markers]:

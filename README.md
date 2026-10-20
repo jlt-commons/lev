@@ -297,7 +297,7 @@ noul), a calibration map or its file's path.
                         :jev true               ; thinking off: every question in one pass (Jev mode, below)
                         :split-boundary true    ; Jev mode: option ids start their own token (75% vs 68% on authored144)
                         :thinks true            ; false: no thinking mode (no <think> tags; thinking stays off)
-                        :prompt "lev"           ; or "semif", "jevk5", "winnow" (below)
+                        :prompt "lev"           ; or "semif", "jevk5", "winnow", "agentdecision" (below)
                         :template "chatml"      ; the chat format: chatml (Qwen, MiniCPM) or gemma4 (Gemma 4, Winnow)
                         :calibration 1.0        ; temperature(s) over the option scores (Calibration), per mode under
                                                 ; :thinking / :direct, the thinking ones per budget under :by-budget
@@ -310,7 +310,7 @@ so `{:model path}` alone is a complete entry.
 
 `:prompt` picks how a question is put to the model. `lev` is the state,
 the question, and the options by id, with `ANSWER: <id>` scored.
-`semif` is SemIf's JSON payload with lettered options. The other two are
+`semif` is SemIf's JSON payload with lettered options. The others are
 the prompts of models fine-tuned on them, and they read the letter's next
 token only:
 
@@ -324,11 +324,34 @@ token only:
   options, `Answer:\n`. It needs `:template "gemma4"`, and `:thinks false`
   for E4B, whose template has no empty-thought marker. The author's
   fitted temperature is 1.2574.
+- `agentdecision` is
+  [JevAgentHarness/AgentDecision-4B](https://huggingface.co/JevAgentHarness/AgentDecision-4B)'s
+  prompt (a LoRA on Qwen3-4B, trained for agent tool choice): `STATE:` /
+  `QUESTION:` / `OPTIONS:`, with labels A-Z then a-z (at most 52; its
+  server's knockout over larger sets is not done here). Options are
+  written `name -- description`, a noul as `yes` / `no`, and a score
+  level as `level k: description`. The model was trained with thinking
+  off, so the entry sets `:thinking false`. `:calibration` takes its
+  `calibration.json` as it is, with its own option-count buckets
+  (2 / 3-5 / 6-16 / 17-52). The release is an adapter, so
+  `bench/agentdecision_gguf.py` merges it into the base revision it was
+  trained on and converts the result to a GGUF. Its server cuts a prompt
+  to its last 4,096 tokens; lev does not, so a longer prompt needs a
+  larger `:n-ctx`.
 
 ```clojure
 {:thinkers {"jevk5" {:model "/Users/me/models/jevk5-4b-v0.3-Q8_0.gguf" :prompt "jevk5" :thinking false :calibration 1.22}
             "winnow-e4b" {:model "/Users/me/models/Winnow-E4B-Q8_0.gguf" :prompt "winnow" :template "gemma4"
-                          :thinks false :n-ctx 8192 :n-seq-max 8 :calibration 1.2574}}}
+                          :thinks false :n-ctx 8192 :n-seq-max 8 :calibration 1.2574}
+            "agentdecision-4b" {:model "/Users/me/models/AgentDecision-4B-Q8_0.gguf" :prompt "agentdecision" :thinking false
+                                :calibration "/Users/me/models/AgentDecision-4B/calibration.json"}}}
+```
+
+```sh
+hf download JevAgentHarness/AgentDecision-4B --local-dir ~/models/AgentDecision-4B
+hf download Qwen/Qwen3-4B --revision 1cfa9a7208912126459214e8b04321603b3df60c --local-dir ~/models/Qwen3-4B
+uv run --with torch --with transformers --with peft --with sentencepiece \
+  python bench/agentdecision_gguf.py ~/models/AgentDecision-4B ~/models/Qwen3-4B ~/models/AgentDecision-4B-Q8_0.gguf
 ```
 
 On typed-decisions (`bench/README.md`), Winnow-E4B scores 0.724 at ECE

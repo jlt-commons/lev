@@ -539,3 +539,50 @@
         out (think/system-one (jev-thinker calls {}) "" (select-keys questions ["churn_risk"]) nil)]
     (is (every? :decide @calls) "the engine takes no empty context")
     (is (number? (get-in out ["answers" "churn_risk" "noul"])))))
+
+(deftest the-agentdecision-prompt-is-the-papers
+  (let [calls (atom [])
+        out (think/system-one (jev-thinker calls {:prompt "agentdecision" :jev false}) state questions nil)
+        [d u c p] @calls]
+    (testing "the system turn, STATE / QUESTION / OPTIONS, the state as JSON, a choice's name -- description"
+      (is (= (str "<|im_start|>system\nYou are a fast decision module inside an AI agent. Read the state and answer the question with exactly one token: the label of your answer.<|im_end|>\n"
+                  "<|im_start|>user\nSTATE:\n{\"subject\": \"Duplicate billing\", \"body\": \"We were billed twice. Refund before Friday or we cancel.\"}"
+                  "\n\nQUESTION: Which department should handle this?\nOPTIONS:\nA. billing -- invoices, payments, refunds\nB. technical -- bugs\nC. other"
+                  "\n\nAnswer with the option label only.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>")
+             (:decide d))))
+    (testing "score levels as level k: description, a noul yes / no with its descriptions"
+      (is (str/includes? (:decide u) "OPTIONS:\nA. level 0: not urgent\nB. level 1: soon\nC. level 2: critical\n\n"))
+      (is (str/includes? (:decide c) "OPTIONS:\nA. yes\nB. no\n\n"))
+      (is (str/includes? (:decide p) "OPTIONS:\nA. yes -- a scam\nB. no -- legitimate\n\n")))
+    (testing "the label's next token after the empty thought"
+      (is (= ["A" "B" "C"] (:options d)))
+      (is (= "" (:answer-end (:opts d))))
+      (is (= "\n\n" (:answer-prefix (:opts d)))))
+    (testing "a noul is asked yes first and answered as true"
+      (is (= 0.5 (get-in out ["answers" "churn_risk" "noul"])))))
+  (testing "a string state as written, instructions that are not a string as JSON"
+    (let [calls (atom [])]
+      (think/system-one (jev-thinker calls {:prompt "agentdecision" :jev false}) "TASK: ship it"
+                        {"q" {"type" "choice" "instructions" {"ask" "which"} "criteria" {"a" {"x" 1} "b" ""}}} nil)
+      (is (str/includes? (:decide (first @calls)) "STATE:\nTASK: ship it\n\nQUESTION: {\"ask\": \"which\"}\nOPTIONS:\nA. a -- {\"x\": 1}\nB. b\n\n"))))
+  (testing "52 labels, A-Z then a-z; more is refused"
+    (let [calls (atom [])
+          many (fn [n] {"q" {"type" "choice" "instructions" "pick" "criteria" (mapv #(str "o" %) (range n))}})]
+      (think/system-one (jev-thinker calls {:prompt "agentdecision" :jev false}) state (many 52) nil)
+      (is (= (concat (map str "ABCDEFGHIJKLMNOPQRSTUVWXYZ") (map str "abcdefghijklmnopqrstuvwxyz")) (:options (first @calls))))
+      (is (thrown-with-msg? Exception #"at most 52" (think/system-one (jev-thinker (atom []) {:prompt "agentdecision"}) state (many 53) nil)))
+      (is (thrown-with-msg? Exception #"at most 26" (think/system-one (jev-thinker (atom []) {:prompt "winnow" :template "gemma4" :thinks false}) state (many 27) nil))
+          "in Jev mode too, before the prompt is built"))))
+
+(deftest the-agentdecision-calibration-file-is-read-as-is
+  (spit "target/agentdecision-cal.json"
+        "{\"global\": 0.77, \"buckets\": {\"noul:2\": 0.42, \"choice:17-52\": 0.05, \"choice:3-5\": 0.97}}")
+  (let [t (jev-thinker (atom []) {:prompt "agentdecision" :calibration "target/agentdecision-cal.json"})
+        cal (ag/calibration-of t)]
+    (is (= {:temperature [0.77 0.77 0.77]
+            :temperature-by-options {"noul:2" 0.42 "choice:17-52" 0.05 "choice:3-5" 0.97}
+            :buckets ["2" "3-5" "6-16" "17-52"]}
+           cal))
+    (is (= 0.05 (ag/temperature-for cal 0 20)) "20 options is 17-52, not lev's 11+")
+    (is (= 0.77 (ag/temperature-for cal 0 8)) "6-16 has no temperature: the global one")
+    (is (= 0.77 (ag/temperature-for cal 1 3)) "no score buckets: the global one")))

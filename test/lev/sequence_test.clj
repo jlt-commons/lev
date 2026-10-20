@@ -64,7 +64,13 @@
   (is (= "noul:6-10" (seq/temp-bucket 2 6)))
   (is (= "choice:6-10" (seq/temp-bucket 0 10)))
   (is (= "choice:11+" (seq/temp-bucket 0 11)))
-  (is (= "choice:11+" (seq/temp-bucket 0 200))))
+  (is (= "choice:11+" (seq/temp-bucket 0 200)))
+  (testing "a calibration's own buckets, AgentDecision's"
+    (let [bs ["2" "3-5" "6-16" "17-52"]]
+      (is (= "noul:2" (seq/temp-bucket 2 2 bs)))
+      (is (= "choice:6-16" (seq/temp-bucket 0 16 bs)))
+      (is (= "choice:17-52" (seq/temp-bucket 0 17 bs)))
+      (is (= "choice:17-52" (seq/temp-bucket 0 80 bs)) "past the last, the last"))))
 
 (deftest ordered-map-survives-growth
   (let [ks (map str (range 30))]

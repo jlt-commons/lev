@@ -181,6 +181,18 @@
                   "--with" "torch==2.14.1" "--with" "transformers==5.19.0" "--with" "safetensors==0.8.0" "--with" "numpy==2.5.3"
                   "python" "bench/clef_golden.py" dir "golden/clef"))}
 
+  agentdecision-golden
+  {:doc "regenerate golden/agentdecision from AgentDecision-4B's merged checkpoint and its research code's prompts (bench/agentdecision_golden.py through uv; LEV_TEST_AGENTDECISION_DIR is the Hub download with merged/ from bench/agentdecision_gguf.py, else ~/src/models/AgentDecision-4B; JEVHARNESS_SRC is JevAgentHarness's research/src)"
+   :task (let [dir (or (System/getenv "LEV_TEST_AGENTDECISION_DIR") (str (System/getProperty "user.home") "/src/models/AgentDecision-4B"))
+               src (System/getenv "JEVHARNESS_SRC")]
+           (when-not (fs/exists? (str dir "/merged/config.json"))
+             (throw (ex-info (str "no merged checkpoint under " dir "/merged (python bench/agentdecision_gguf.py)") {})))
+           (when-not (and src (fs/exists? (str src "/jevharness/training/serve_jev.py")))
+             (throw (ex-info "set JEVHARNESS_SRC to a JevAgentHarness checkout's research/src" {})))
+           (shell "uv" "run" "--no-project" "--python" "3.12"
+                  "--with" "torch==2.14.1" "--with" "transformers==5.19.0" "--with" "numpy==2.5.3"
+                  "python" "bench/agentdecision_golden.py" dir src "golden/agentdecision"))}
+
   binary
   {:doc "build the standalone HTTP server ./lev-server (kernels and llama.cpp linked in; mlx when `jolt mlx` built it, else an empty archive stands in) and self-test it against golden/"
    :depends [kernels llama]
