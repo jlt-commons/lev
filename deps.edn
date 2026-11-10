@@ -18,8 +18,8 @@
                         :git/tag "v0.0.14"
                         :git/sha "ce6104687387328b909bbd372107376018acbf4b"}
         jolt-lang/ring-chez-adapter {:git/url "https://github.com/jolt-lang/ring-chez-adapter"
-                                     :git/tag "v0.7.14"
-                                     :git/sha "d29d8add671f66e4223567fb60e53a975ecce23e"}}
+                                     :git/tag "v0.9.1"
+                                     :git/sha "018763879ac41135ca74cd22caf9acfb20ae55b4"}}
 
  ;; kernels: built from native/lev_kernels.c by the `kernels` task.
  ;; blas: Accelerate framework on mac, OpenBLAS elsewhere.
