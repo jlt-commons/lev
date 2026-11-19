@@ -65,6 +65,13 @@
           (is (t/eq-bytes? gold got)
               (str "first mismatch " (t/first-mismatch gold got))))))))
 
+(deftest first-mismatch-finds-the-first-differing-byte
+  (let [a (t/from-bytes [1 0 1 1] [4])]
+    (is (= :none (t/first-mismatch a (t/from-bytes [1 0 1 1] [4]))))
+    (is (= [0 1 0] (t/first-mismatch a (t/from-bytes [0 0 1 1] [4]))))
+    (is (= [2 1 0] (t/first-mismatch a (t/from-bytes [1 0 0 1] [4]))))
+    (is (= [3 1 0] (t/first-mismatch a (t/from-bytes [1 0 1 0] [4]))))))
+
 ;; --- embeddings: row gather + weight-only LayerNorm -------------------------
 
 (deftest embeddings-match-torch

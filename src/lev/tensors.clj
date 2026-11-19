@@ -413,11 +413,17 @@
                   (recur (inc i)))))))
 
 (defn first-mismatch
+  "[index byte-in-a byte-in-b] at the first byte two uint8 'tensors' differ
+  in, or :none when they agree."
   [a b]
   (loop [i 0]
-    (if (or (= i (:size a)) (= (ffi/read (:p a) :uint8 i) (ffi/read (:p b) :uint8 i)))
-      (if (= i (:size a)) :none [i (ffi/read (:p a) :uint8 i) (ffi/read (:p b) :uint8 i)])
-      [i (ffi/read (:p a) :uint8 i) (ffi/read (:p b) :uint8 i)])))
+    (if (= i (:size a))
+      :none
+      (let [x (ffi/read (:p a) :uint8 i)
+            y (ffi/read (:p b) :uint8 i)]
+        (if (= x y)
+          (recur (inc i))
+          [i x y])))))
 
 (defn get
   [p i]
