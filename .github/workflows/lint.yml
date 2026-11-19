@@ -1,0 +1,14 @@
+name: lint
+
+# jolt-lsp's diagnostics as a gate: an error-level finding fails the job
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  jolt-lsp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jlt-commons/jolt-lsp@v0.5.0
