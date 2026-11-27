@@ -10,7 +10,7 @@
  ;; `jolt prepare`. It needs java.time at load, which jolt-lang/time provides.
  ;; ring-chez-adapter serves lev.server (jolt -M:serve / the built binary);
  ;; ruuter (a data-driven trie router) dispatches its routes.
- :deps {org.clojure/data.json {:mvn/version "2.5.1"}
+ :deps {org.clojure/data.json {:mvn/version "2.5.2"}
         askonomm/ruuter {:git/url "https://git.nmm.ee/asko/ruuter.git"
                         :git/tag "v2.1.1"
                         :git/sha "263f868cf19e73ccda7cda6b4d4af1d8fe504749"}
@@ -18,8 +18,8 @@
                         :git/tag "v0.0.19"
                         :git/sha "5104b050e331ff4fadd7488c958bf121ca5c91d9"}
         jolt-lang/ring-chez-adapter {:git/url "https://github.com/jolt-lang/ring-chez-adapter"
-                                     :git/tag "v0.9.1"
-                                     :git/sha "018763879ac41135ca74cd22caf9acfb20ae55b4"}}
+                                     :git/tag "v0.11.1"
+                                     :git/sha "83938a69a098bc92046b3e65e74335947e93bc04"}}
 
  ;; kernels: built from native/lev_kernels.c by the `kernels` task.
  ;; blas: Accelerate framework on mac, OpenBLAS elsewhere.
@@ -116,8 +116,8 @@
 
   llama
   {:doc "fetch llama.cpp at the pinned release into native/llama.cpp, build it static, wrap it and the decision engine (native/decision-engine.cpp, vendored until llama.cpp takes it) in native/liblev_llm.* (the thinker's native; LLAMA_CPP_SRC=path fetches from a local checkout holding that commit)"
-   :task (let [release "b11630"
-               rev "6868a52cb337450658006ad2f9281c2eb63f1666"
+   :task (let [release "b12800"
+               rev "47d6192fce301f627c4d3e1c6910588c364dce0e"
                src (or (System/getenv "LLAMA_CPP_SRC") "https://github.com/ggml-org/llama.cpp")
                dir "native/llama.cpp"
                head (str dir "/.git/HEAD")

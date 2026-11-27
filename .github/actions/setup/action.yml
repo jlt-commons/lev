@@ -80,7 +80,7 @@ runs:
     # tokenizer_config.json and multilingual/ were added)
     - name: Cache the encoder checkpoints
       id: checkpoint
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/laya
         key: laya-checkpoint-${{ inputs.checkpoints-revision }}-v2
